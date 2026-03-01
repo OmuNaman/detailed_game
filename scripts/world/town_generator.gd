@@ -287,72 +287,44 @@ func _create_navigation_region() -> void:
 
 	var nav_poly := NavigationPolygon.new()
 
-	# Outer boundary — the entire map is potentially walkable
-	var outer := PackedVector2Array([
-		Vector2(0, 0),
-		Vector2(MAP_WIDTH * TILE_SIZE, 0),
-		Vector2(MAP_WIDTH * TILE_SIZE, MAP_HEIGHT * TILE_SIZE),
-		Vector2(0, MAP_HEIGHT * TILE_SIZE),
-	])
-	nav_poly.add_outline(outer)
+	# Build navmesh directly from walkable tiles. Each walkable tile becomes a
+	# quad polygon. Adjacent walkable tiles share edge vertices, so the nav
+	# server connects them automatically. This avoids the outline approach where
+	# shared vertices between wall segments broke make_polygons_from_outlines().
+	var verts := PackedVector2Array()
+	var vert_map := {}
+	var polys: Array = []
 
-	# Carve out only WALLS and ROOF per building, leaving floor + door navigable.
-	# This lets NPCs pathfind through the door into the building interior.
-	for bld: Dictionary in _buildings:
-		var gx: int = bld["gx"]
-		var gy: int = bld["gy"]
-		var w: int = bld["w"]
-		var h: int = bld["h"]
-		var door_x: int = gx + w / 2
-
-		# Roof (top row)
-		_add_rect_outline(nav_poly, gx, gy, gx + w, gy + 1)
-		# Left wall (full height below roof)
-		_add_rect_outline(nav_poly, gx, gy + 1, gx + 1, gy + h)
-		# Right wall (full height below roof)
-		_add_rect_outline(nav_poly, gx + w - 1, gy + 1, gx + w, gy + h)
-		# Bottom wall — left of door
-		_add_rect_outline(nav_poly, gx + 1, gy + h - 1, door_x, gy + h)
-		# Bottom wall — right of door
-		_add_rect_outline(nav_poly, door_x + 1, gy + h - 1, gx + w - 1, gy + h)
-
-	# Carve out water (bounding box of all water tiles)
-	var water_min_x: int = MAP_WIDTH
-	var water_min_y: int = MAP_HEIGHT
-	var water_max_x: int = 0
-	var water_max_y: int = 0
 	for y: int in range(MAP_HEIGHT):
 		for x: int in range(MAP_WIDTH):
-			if _map[y][x] == 2:
-				water_min_x = mini(water_min_x, x)
-				water_min_y = mini(water_min_y, y)
-				water_max_x = maxi(water_max_x, x + 1)
-				water_max_y = maxi(water_max_y, y + 1)
+			var tile: int = _map[y][x]
+			# Walkable: grass(0), path(1), floor(4), door(6)
+			if tile == 0 or tile == 1 or tile == 4 or tile == 6:
+				var px: int = x * TILE_SIZE
+				var py: int = y * TILE_SIZE
+				var i_tl: int = _nav_vert(verts, vert_map, px, py)
+				var i_tr: int = _nav_vert(verts, vert_map, px + TILE_SIZE, py)
+				var i_br: int = _nav_vert(verts, vert_map, px + TILE_SIZE, py + TILE_SIZE)
+				var i_bl: int = _nav_vert(verts, vert_map, px, py + TILE_SIZE)
+				polys.append(PackedInt32Array([i_tl, i_tr, i_br, i_bl]))
 
-	if water_max_x > water_min_x:
-		var water_hole := PackedVector2Array([
-			Vector2(water_min_x * TILE_SIZE, water_min_y * TILE_SIZE),
-			Vector2(water_max_x * TILE_SIZE, water_min_y * TILE_SIZE),
-			Vector2(water_max_x * TILE_SIZE, water_max_y * TILE_SIZE),
-			Vector2(water_min_x * TILE_SIZE, water_max_y * TILE_SIZE),
-		])
-		nav_poly.add_outline(water_hole)
+	nav_poly.vertices = verts
+	for p: PackedInt32Array in polys:
+		nav_poly.add_polygon(p)
 
-	nav_poly.make_polygons_from_outlines()
 	nav_region.navigation_polygon = nav_poly
 	add_child(nav_region)
 
 
-func _add_rect_outline(nav_poly: NavigationPolygon, x1: int, y1: int, x2: int, y2: int) -> void:
-	## Adds a rectangular hole outline in grid coords. Skips zero-size rects.
-	if x2 <= x1 or y2 <= y1:
-		return
-	nav_poly.add_outline(PackedVector2Array([
-		Vector2(x1 * TILE_SIZE, y1 * TILE_SIZE),
-		Vector2(x2 * TILE_SIZE, y1 * TILE_SIZE),
-		Vector2(x2 * TILE_SIZE, y2 * TILE_SIZE),
-		Vector2(x1 * TILE_SIZE, y2 * TILE_SIZE),
-	]))
+func _nav_vert(verts: PackedVector2Array, vert_map: Dictionary, px: int, py: int) -> int:
+	## Returns vertex index for the given pixel coordinate, adding it if new.
+	var key := Vector2i(px, py)
+	if vert_map.has(key):
+		return vert_map[key]
+	var idx: int = verts.size()
+	verts.append(Vector2(px, py))
+	vert_map[key] = idx
+	return idx
 
 
 func get_building_door_positions() -> Dictionary:
