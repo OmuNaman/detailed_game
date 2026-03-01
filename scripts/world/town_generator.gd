@@ -287,44 +287,82 @@ func _create_navigation_region() -> void:
 
 	var nav_poly := NavigationPolygon.new()
 
-	# Build navmesh directly from walkable tiles. Each walkable tile becomes a
-	# quad polygon. Adjacent walkable tiles share edge vertices, so the nav
-	# server connects them automatically. This avoids the outline approach where
-	# shared vertices between wall segments broke make_polygons_from_outlines().
-	var verts := PackedVector2Array()
-	var vert_map := {}
-	var polys: Array = []
+	# Outer boundary — the entire map is potentially walkable
+	var outer := PackedVector2Array([
+		Vector2(0, 0),
+		Vector2(MAP_WIDTH * TILE_SIZE, 0),
+		Vector2(MAP_WIDTH * TILE_SIZE, MAP_HEIGHT * TILE_SIZE),
+		Vector2(0, MAP_HEIGHT * TILE_SIZE),
+	])
+	nav_poly.add_outline(outer)
 
+	# Each building gets ONE wall outline shaped like a picture frame with a
+	# door notch. The outline traces CW around the exterior, enters the door
+	# gap, traces CCW around the interior, exits the door, and continues CW.
+	# This carves the wall/roof area while leaving floor + door navigable —
+	# all as a single outline so no shared vertices between outlines.
+	for bld: Dictionary in _buildings:
+		nav_poly.add_outline(_building_wall_outline(bld))
+
+	# Carve out water (bounding box of all water tiles)
+	var water_min_x: int = MAP_WIDTH
+	var water_min_y: int = MAP_HEIGHT
+	var water_max_x: int = 0
+	var water_max_y: int = 0
 	for y: int in range(MAP_HEIGHT):
 		for x: int in range(MAP_WIDTH):
-			var tile: int = _map[y][x]
-			# Walkable: grass(0), path(1), floor(4), door(6)
-			if tile == 0 or tile == 1 or tile == 4 or tile == 6:
-				var px: int = x * TILE_SIZE
-				var py: int = y * TILE_SIZE
-				var i_tl: int = _nav_vert(verts, vert_map, px, py)
-				var i_tr: int = _nav_vert(verts, vert_map, px + TILE_SIZE, py)
-				var i_br: int = _nav_vert(verts, vert_map, px + TILE_SIZE, py + TILE_SIZE)
-				var i_bl: int = _nav_vert(verts, vert_map, px, py + TILE_SIZE)
-				polys.append(PackedInt32Array([i_tl, i_tr, i_br, i_bl]))
+			if _map[y][x] == 2:
+				water_min_x = mini(water_min_x, x)
+				water_min_y = mini(water_min_y, y)
+				water_max_x = maxi(water_max_x, x + 1)
+				water_max_y = maxi(water_max_y, y + 1)
 
-	nav_poly.vertices = verts
-	for p: PackedInt32Array in polys:
-		nav_poly.add_polygon(p)
+	if water_max_x > water_min_x:
+		nav_poly.add_outline(PackedVector2Array([
+			Vector2(water_min_x * TILE_SIZE, water_min_y * TILE_SIZE),
+			Vector2(water_max_x * TILE_SIZE, water_min_y * TILE_SIZE),
+			Vector2(water_max_x * TILE_SIZE, water_max_y * TILE_SIZE),
+			Vector2(water_min_x * TILE_SIZE, water_max_y * TILE_SIZE),
+		]))
 
+	nav_poly.make_polygons_from_outlines()
 	nav_region.navigation_polygon = nav_poly
 	add_child(nav_region)
 
 
-func _nav_vert(verts: PackedVector2Array, vert_map: Dictionary, px: int, py: int) -> int:
-	## Returns vertex index for the given pixel coordinate, adding it if new.
-	var key := Vector2i(px, py)
-	if vert_map.has(key):
-		return vert_map[key]
-	var idx: int = verts.size()
-	verts.append(Vector2(px, py))
-	vert_map[key] = idx
-	return idx
+func _building_wall_outline(bld: Dictionary) -> PackedVector2Array:
+	## Creates a single polygon outline tracing the building's walls and roof.
+	## Shaped like a picture frame with a notch at the door:
+	##   CW around exterior → enter door gap → CCW around interior → exit door
+	## This carves walls/roof while leaving floor + door as navigable space.
+	var gx: int = bld["gx"]
+	var gy: int = bld["gy"]
+	var w: int = bld["w"]
+	var h: int = bld["h"]
+	var door_x: int = gx + w / 2
+	var TS: int = TILE_SIZE
+
+	var points: Array[Vector2] = [
+		Vector2(gx * TS, gy * TS),                       # outer top-left
+		Vector2((gx + w) * TS, gy * TS),                 # outer top-right
+		Vector2((gx + w) * TS, (gy + h) * TS),           # outer bottom-right
+		Vector2((door_x + 1) * TS, (gy + h) * TS),       # bottom, right of door
+		Vector2((door_x + 1) * TS, (gy + h - 1) * TS),   # enter door notch (right)
+		Vector2((gx + w - 1) * TS, (gy + h - 1) * TS),   # inner bottom-right
+		Vector2((gx + w - 1) * TS, (gy + 1) * TS),       # inner top-right
+		Vector2((gx + 1) * TS, (gy + 1) * TS),           # inner top-left
+		Vector2((gx + 1) * TS, (gy + h - 1) * TS),       # inner bottom-left
+		Vector2(door_x * TS, (gy + h - 1) * TS),         # exit door notch (left)
+		Vector2(door_x * TS, (gy + h) * TS),             # bottom, left of door
+		Vector2(gx * TS, (gy + h) * TS),                 # outer bottom-left
+	]
+
+	# Remove consecutive duplicate vertices (when door edge aligns with inner wall)
+	var result := PackedVector2Array()
+	for i: int in range(points.size()):
+		if i == 0 or not points[i].is_equal_approx(points[i - 1]):
+			result.append(points[i])
+	return result
 
 
 func get_building_door_positions() -> Dictionary:
