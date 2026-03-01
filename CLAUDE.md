@@ -226,8 +226,8 @@ Build ONE small town (8-12 buildings, 15-20 NPCs) with:
 - [x] Tile map with buildings (homes, shop, tavern, sheriff office, courthouse, church)
 - [x] Player movement (top-down, 4-directional, GBA Pokemon style)
 - [x] Game clock with day/night cycle
-- [ ] NPC spawning with core descriptions and personality traits
-- [ ] NPC pathfinding (A* on tilemap)
+- [x] NPC spawning with core descriptions and personality traits
+- [x] NPC pathfinding (A* on tilemap)
 - [ ] Basic needs system (hunger, energy, social)
 - [ ] Memory Stream — NPCs observe and store MemoryRecords with importance scoring
 - [ ] Memory Retrieval — recency + importance + relevance weighted retrieval

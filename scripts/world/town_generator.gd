@@ -58,6 +58,7 @@ func _ready() -> void:
 	_place_water()
 	_render_map()
 	_add_building_labels()
+	_create_navigation_region()
 
 
 func _init_map() -> void:
@@ -281,6 +282,80 @@ func _add_building_labels() -> void:
 		label.size.x = w * TILE_SIZE
 
 		_label_layer.add_child(label)
+
+
+func _create_navigation_region() -> void:
+	var nav_region := NavigationRegion2D.new()
+	nav_region.name = "NavigationRegion"
+
+	var nav_poly := NavigationPolygon.new()
+
+	# Outer boundary — the entire map is potentially walkable
+	var outer := PackedVector2Array([
+		Vector2(0, 0),
+		Vector2(MAP_WIDTH * TILE_SIZE, 0),
+		Vector2(MAP_WIDTH * TILE_SIZE, MAP_HEIGHT * TILE_SIZE),
+		Vector2(0, MAP_HEIGHT * TILE_SIZE),
+	])
+	nav_poly.add_outline(outer)
+
+	# Carve out buildings as holes
+	for bld: Dictionary in _buildings:
+		var gx: int = bld["gx"]
+		var gy: int = bld["gy"]
+		var w: int = bld["w"]
+		var h: int = bld["h"]
+		var hole := PackedVector2Array([
+			Vector2(gx * TILE_SIZE, gy * TILE_SIZE),
+			Vector2((gx + w) * TILE_SIZE, gy * TILE_SIZE),
+			Vector2((gx + w) * TILE_SIZE, (gy + h) * TILE_SIZE),
+			Vector2(gx * TILE_SIZE, (gy + h) * TILE_SIZE),
+		])
+		nav_poly.add_outline(hole)
+
+	# Carve out water (bounding box of all water tiles)
+	var water_min_x: int = MAP_WIDTH
+	var water_min_y: int = MAP_HEIGHT
+	var water_max_x: int = 0
+	var water_max_y: int = 0
+	for y: int in range(MAP_HEIGHT):
+		for x: int in range(MAP_WIDTH):
+			if _map[y][x] == 2:
+				water_min_x = mini(water_min_x, x)
+				water_min_y = mini(water_min_y, y)
+				water_max_x = maxi(water_max_x, x + 1)
+				water_max_y = maxi(water_max_y, y + 1)
+
+	if water_max_x > water_min_x:
+		var water_hole := PackedVector2Array([
+			Vector2(water_min_x * TILE_SIZE, water_min_y * TILE_SIZE),
+			Vector2(water_max_x * TILE_SIZE, water_min_y * TILE_SIZE),
+			Vector2(water_max_x * TILE_SIZE, water_max_y * TILE_SIZE),
+			Vector2(water_min_x * TILE_SIZE, water_max_y * TILE_SIZE),
+		])
+		nav_poly.add_outline(water_hole)
+
+	nav_poly.make_polygons_from_outlines()
+	nav_region.navigation_polygon = nav_poly
+	add_child(nav_region)
+
+
+func get_building_door_positions() -> Dictionary:
+	## Returns {building_name: Vector2} — position just outside each building's door.
+	var positions: Dictionary = {}
+	for bld: Dictionary in _buildings:
+		var gx: int = bld["gx"]
+		var gy: int = bld["gy"]
+		var w: int = bld["w"]
+		var h: int = bld["h"]
+		var door_x: int = gx + w / 2
+		# One tile below the door (just outside the building)
+		var pos := Vector2(
+			door_x * TILE_SIZE + TILE_SIZE / 2.0,
+			(gy + h) * TILE_SIZE + TILE_SIZE / 2.0
+		)
+		positions[bld["name"]] = pos
+	return positions
 
 
 func get_player_spawn_position() -> Vector2:
