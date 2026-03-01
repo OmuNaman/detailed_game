@@ -1,0 +1,22 @@
+[gd_scene load_steps=6 format=3 uid="uid://ctown001"]
+
+[ext_resource type="Script" path="res://scripts/world/town.gd" id="1_town"]
+[ext_resource type="Script" path="res://scripts/world/town_generator.gd" id="2_gen"]
+[ext_resource type="PackedScene" path="res://scenes/world/player.tscn" id="3_player"]
+[ext_resource type="Script" path="res://scripts/world/day_night_cycle.gd" id="4_daynight"]
+[ext_resource type="PackedScene" path="res://scenes/ui/time_hud.tscn" id="5_hud"]
+
+[node name="Town" type="Node2D"]
+script = ExtResource("1_town")
+
+[node name="DayNightCycle" type="CanvasModulate" parent="."]
+color = Color(0.85, 0.55, 0.35, 1)
+script = ExtResource("4_daynight")
+
+[node name="TownMap" type="Node2D" parent="."]
+script = ExtResource("2_gen")
+
+[node name="Player" parent="." instance=ExtResource("3_player")]
+position = Vector2(816, 432)
+
+[node name="TimeHUD" parent="." instance=ExtResource("5_hud")]

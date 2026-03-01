@@ -1,0 +1,14 @@
+# Godot 4 generated files
+.godot/
+
+# Mono/.NET specific
+.mono/
+
+# OS generated
+.DS_Store
+Thumbs.db
+
+# Export builds
+export/
+*.pck
+*.zip
