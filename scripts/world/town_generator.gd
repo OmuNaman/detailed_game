@@ -22,7 +22,7 @@ var _buildings: Array[Dictionary] = [
 	{"name": "Tavern", "gx": 23, "gy": 5, "w": 7, "h": 5},
 	{"name": "Sheriff Office", "gx": 8, "gy": 15, "w": 5, "h": 4},
 	{"name": "Courthouse", "gx": 15, "gy": 15, "w": 7, "h": 5},
-	{"name": "Church", "gx": 32, "gy": 6, "w": 6, "h": 7},
+	{"name": "Church", "gx": 32, "gy": 5, "w": 6, "h": 7},
 	{"name": "House 1", "gx": 5, "gy": 24, "w": 4, "h": 4},
 	{"name": "House 2", "gx": 11, "gy": 24, "w": 4, "h": 4},
 	{"name": "House 3", "gx": 17, "gy": 24, "w": 4, "h": 4},
@@ -101,26 +101,23 @@ func _carve_paths() -> void:
 	for y: int in range(10, 13):
 		_set_tile(26, y, 1)
 
-	# Path to sheriff
-	for y: int in range(13, 16):
+	# Path to sheriff (stop before roof at y=15)
+	for y: int in range(14, 15):
 		_set_tile(10, y, 1)
 
-	# Path to courthouse
-	for y: int in range(13, 16):
+	# Path to courthouse (stop before roof at y=15)
+	for y: int in range(14, 15):
 		_set_tile(18, y, 1)
 
-	# Path to church
-	for y: int in range(13, 14):
-		_set_tile(34, y, 1)
-		_set_tile(35, y, 1)
+	# Church door is now at y=11, road at y=12 touches it directly
 
 	# Paths down to houses from secondary road
 	for hx: int in [6, 12, 18, 24, 30]:
 		for y: int in range(22, 25):
 			_set_tile(hx, y, 1)
 
-	# Path to blacksmith
-	for y: int in range(13, 17):
+	# Path to blacksmith (stop before roof at y=16)
+	for y: int in range(14, 16):
 		_set_tile(35, y, 1)
 
 
@@ -299,19 +296,25 @@ func _create_navigation_region() -> void:
 	])
 	nav_poly.add_outline(outer)
 
-	# Carve out buildings as holes
+	# Carve out only WALLS and ROOF per building, leaving floor + door navigable.
+	# This lets NPCs pathfind through the door into the building interior.
 	for bld: Dictionary in _buildings:
 		var gx: int = bld["gx"]
 		var gy: int = bld["gy"]
 		var w: int = bld["w"]
 		var h: int = bld["h"]
-		var hole := PackedVector2Array([
-			Vector2(gx * TILE_SIZE, gy * TILE_SIZE),
-			Vector2((gx + w) * TILE_SIZE, gy * TILE_SIZE),
-			Vector2((gx + w) * TILE_SIZE, (gy + h) * TILE_SIZE),
-			Vector2(gx * TILE_SIZE, (gy + h) * TILE_SIZE),
-		])
-		nav_poly.add_outline(hole)
+		var door_x: int = gx + w / 2
+
+		# Roof (top row)
+		_add_rect_outline(nav_poly, gx, gy, gx + w, gy + 1)
+		# Left wall (full height below roof)
+		_add_rect_outline(nav_poly, gx, gy + 1, gx + 1, gy + h)
+		# Right wall (full height below roof)
+		_add_rect_outline(nav_poly, gx + w - 1, gy + 1, gx + w, gy + h)
+		# Bottom wall — left of door
+		_add_rect_outline(nav_poly, gx + 1, gy + h - 1, door_x, gy + h)
+		# Bottom wall — right of door
+		_add_rect_outline(nav_poly, door_x + 1, gy + h - 1, gx + w - 1, gy + h)
 
 	# Carve out water (bounding box of all water tiles)
 	var water_min_x: int = MAP_WIDTH
@@ -340,19 +343,30 @@ func _create_navigation_region() -> void:
 	add_child(nav_region)
 
 
+func _add_rect_outline(nav_poly: NavigationPolygon, x1: int, y1: int, x2: int, y2: int) -> void:
+	## Adds a rectangular hole outline in grid coords. Skips zero-size rects.
+	if x2 <= x1 or y2 <= y1:
+		return
+	nav_poly.add_outline(PackedVector2Array([
+		Vector2(x1 * TILE_SIZE, y1 * TILE_SIZE),
+		Vector2(x2 * TILE_SIZE, y1 * TILE_SIZE),
+		Vector2(x2 * TILE_SIZE, y2 * TILE_SIZE),
+		Vector2(x1 * TILE_SIZE, y2 * TILE_SIZE),
+	]))
+
+
 func get_building_door_positions() -> Dictionary:
-	## Returns {building_name: Vector2} — position just outside each building's door.
+	## Returns {building_name: Vector2} — center of each building's interior floor.
 	var positions: Dictionary = {}
 	for bld: Dictionary in _buildings:
 		var gx: int = bld["gx"]
 		var gy: int = bld["gy"]
 		var w: int = bld["w"]
 		var h: int = bld["h"]
-		var door_x: int = gx + w / 2
-		# One tile below the door (just outside the building)
+		# Center of the interior floor area
 		var pos := Vector2(
-			door_x * TILE_SIZE + TILE_SIZE / 2.0,
-			(gy + h) * TILE_SIZE + TILE_SIZE / 2.0
+			(gx + w / 2.0) * TILE_SIZE,
+			(gy + h / 2.0) * TILE_SIZE
 		)
 		positions[bld["name"]] = pos
 	return positions
