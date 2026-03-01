@@ -20,6 +20,11 @@ run/main_scene="res://scenes/world/town.tscn"
 config/features=PackedStringArray("4.6", "GL Compatibility")
 config/icon="res://icon.svg"
 
+[autoload]
+
+EventBus="*res://scripts/core/event_bus.gd"
+GameClock="*res://scripts/core/game_clock.gd"
+
 [display]
 
 window/size/viewport_width=640
@@ -27,11 +32,6 @@ window/size/viewport_height=480
 window/size/window_width_override=1280
 window/size/window_height_override=960
 window/stretch/mode="viewport"
-
-[autoload]
-
-EventBus="*res://scripts/core/event_bus.gd"
-GameClock="*res://scripts/core/game_clock.gd"
 
 [input]
 
