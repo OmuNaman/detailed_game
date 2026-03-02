@@ -416,15 +416,42 @@ func get_building_interior_positions() -> Dictionary:
 						x * TILE_SIZE + TILE_SIZE / 2.0,
 						y * TILE_SIZE + TILE_SIZE / 2.0
 					))
-		# Also include the door tile as a valid spot
-		var door_x: int = gx + w / 2
-		var door_y: int = gy + h - 1
-		tiles.append(Vector2(
-			door_x * TILE_SIZE + TILE_SIZE / 2.0,
-			door_y * TILE_SIZE + TILE_SIZE / 2.0
-		))
 		interiors[bld["name"]] = tiles
 	return interiors
+
+
+# --- Tile Reservation System (anti-stacking) ---
+
+var _reserved_tiles: Dictionary = {}  # {Vector2i: npc_name}
+
+
+func reserve_tile(grid_pos: Vector2i, npc_name: String) -> bool:
+	## Try to reserve a tile for an NPC. Returns false if already claimed by another.
+	if _reserved_tiles.has(grid_pos) and _reserved_tiles[grid_pos] != npc_name:
+		return false
+	_reserved_tiles[grid_pos] = npc_name
+	return true
+
+
+func release_tile(grid_pos: Vector2i, npc_name: String) -> void:
+	## Release a tile reservation when NPC leaves.
+	if _reserved_tiles.has(grid_pos) and _reserved_tiles[grid_pos] == npc_name:
+		_reserved_tiles.erase(grid_pos)
+
+
+func get_unreserved_interior_tile(building_name: String, npc_name: String) -> Vector2:
+	## Returns a random unreserved interior tile. Falls back to first tile if all taken.
+	var interiors: Dictionary = get_building_interior_positions()
+	if not interiors.has(building_name):
+		return Vector2.ZERO
+	var tiles: Array = interiors[building_name]
+	var shuffled: Array = tiles.duplicate()
+	shuffled.shuffle()
+	for tile_pos: Vector2 in shuffled:
+		var grid: Vector2i = Vector2i(int(tile_pos.x) / TILE_SIZE, int(tile_pos.y) / TILE_SIZE)
+		if reserve_tile(grid, npc_name):
+			return tile_pos
+	return tiles[0]
 
 
 func get_player_spawn_position() -> Vector2:

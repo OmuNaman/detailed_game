@@ -41,6 +41,7 @@ var _path: PackedVector2Array = PackedVector2Array()
 var _path_index: int = 0
 var _is_moving: bool = false
 var _astar: AStarGrid2D = null
+var _town_map: Node2D = null
 
 @onready var sprite: Sprite2D = $Sprite2D
 @onready var name_label: Label = $NameLabel
@@ -78,6 +79,7 @@ func _ready() -> void:
 	var town_map: Node2D = get_parent().get_node_or_null("TownMap")
 	if town_map and town_map.has_method("get_astar"):
 		_astar = town_map.get_astar()
+		_town_map = town_map
 		print("[%s] Got AStarGrid2D reference" % npc_name)
 	else:
 		push_error("[%s] Could not find TownMap or get_astar()!" % npc_name)
@@ -127,6 +129,14 @@ func _arrive() -> void:
 	_is_moving = false
 	_path = PackedVector2Array()
 	velocity = Vector2.ZERO
+
+
+func _face_toward(target_pos: Vector2) -> void:
+	## Flip sprite to face toward the target position.
+	if target_pos.x < global_position.x:
+		sprite.flip_h = true
+	elif target_pos.x > global_position.x:
+		sprite.flip_h = false
 
 
 func _on_hour_changed(hour: int) -> void:
@@ -183,6 +193,10 @@ func get_dialogue_response() -> String:
 func get_dialogue_response_async(callback: Callable) -> void:
 	## Async dialogue: tries Gemini first, falls back to template.
 	## Callback receives (response: String).
+	var player: Node = get_tree().get_first_node_in_group("player")
+	if player:
+		_face_toward(player.global_position)
+
 	if not GeminiClient.has_api_key():
 		callback.call(_get_template_response())
 		return
@@ -286,13 +300,21 @@ func _update_destination(hour: int) -> void:
 	if dest == _current_destination:
 		return
 
+	# Release old tile reservation before moving to new destination
+	if _town_map and _town_map.has_method("release_tile"):
+		var old_grid := Vector2i(int(global_position.x) / TILE_SIZE, int(global_position.y) / TILE_SIZE)
+		_town_map.release_tile(old_grid, npc_name)
+
 	_current_destination = dest
 
-	# Pick a random interior tile if available, otherwise use door position
+	# Pick an unreserved interior tile if available, otherwise use door position
 	var target_pos: Vector2 = Vector2.ZERO
 	if _building_interiors.has(dest) and _building_interiors[dest].size() > 0:
-		var tiles: Array = _building_interiors[dest]
-		target_pos = tiles[randi() % tiles.size()]
+		if _town_map and _town_map.has_method("get_unreserved_interior_tile"):
+			target_pos = _town_map.get_unreserved_interior_tile(dest, npc_name)
+		else:
+			var tiles: Array = _building_interiors[dest]
+			target_pos = tiles[randi() % tiles.size()]
 	else:
 		target_pos = _building_positions.get(dest, Vector2.ZERO)
 
@@ -416,6 +438,10 @@ func _try_npc_conversation() -> void:
 
 		_last_conversation_time[other_name] = GameClock.total_minutes
 		other_npc._last_conversation_time[npc_name] = GameClock.total_minutes
+
+		# Face each other during conversation
+		_face_toward(other_npc.global_position)
+		other_npc._face_toward(global_position)
 
 		# Create conversation memories for BOTH NPCs
 		var topic: String = _pick_conversation_topic(other_npc)
