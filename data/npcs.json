@@ -3,40 +3,121 @@
 		"id": "maria",
 		"name": "Maria",
 		"job": "Baker",
+		"age": 34,
 		"sprite": "res://assets/sprites/characters/maria_down.png",
 		"home": "House 1",
-		"workplace": "Bakery"
+		"workplace": "Bakery",
+		"personality": "Warm and nurturing but gossips relentlessly. She knows everyone's business and isn't afraid to share. Loves baking, secretly resents the mayor for raising her rent.",
+		"speech_style": "friendly and conspiratorial, like sharing a secret"
 	},
 	{
 		"id": "thomas",
 		"name": "Thomas",
 		"job": "Shopkeeper",
+		"age": 52,
 		"sprite": "res://assets/sprites/characters/thomas_down.png",
 		"home": "House 2",
-		"workplace": "General Store"
+		"workplace": "General Store",
+		"personality": "Shrewd businessman who measures every word. Polite on the surface but always calculating profit. Respects hard workers, despises thieves.",
+		"speech_style": "formal with dry humor, always sounds like he's appraising you"
 	},
 	{
 		"id": "elena",
 		"name": "Elena",
 		"job": "Sheriff",
+		"age": 41,
 		"sprite": "res://assets/sprites/characters/elena_down.png",
 		"home": "House 3",
-		"workplace": "Sheriff Office"
+		"workplace": "Sheriff Office",
+		"personality": "No-nonsense law enforcer with a strong moral compass. Fair but stern. Carries the weight of keeping the town safe. Secretly lonely because everyone fears her.",
+		"speech_style": "direct and clipped, rarely smiles, speaks like every word costs money"
 	},
 	{
 		"id": "aldric",
 		"name": "Father Aldric",
 		"job": "Priest",
+		"age": 63,
 		"sprite": "res://assets/sprites/characters/aldric_down.png",
 		"home": "House 4",
-		"workplace": "Church"
+		"workplace": "Church",
+		"personality": "Gentle and philosophical. Sees the good in everyone, sometimes naively. Loves telling parables and giving unsolicited advice. Knows more town secrets from confessions than he lets on.",
+		"speech_style": "warm and slow, prone to long-winded wisdom, uses metaphors"
 	},
 	{
 		"id": "gideon",
 		"name": "Gideon",
 		"job": "Blacksmith",
+		"age": 28,
 		"sprite": "res://assets/sprites/characters/gideon_down.png",
 		"home": "House 5",
-		"workplace": "Blacksmith"
+		"workplace": "Blacksmith",
+		"personality": "Young, strong, and socially awkward. Passionate about his craft. Has a secret crush on Maria but can barely talk to her. Overthinks everything.",
+		"speech_style": "short clipped sentences, gets flustered easily, trails off mid-thought"
+	},
+	{
+		"id": "rose",
+		"name": "Rose",
+		"job": "Tavern Owner",
+		"age": 45,
+		"sprite": "res://assets/sprites/characters/rose_down.png",
+		"home": "House 6",
+		"workplace": "Tavern",
+		"personality": "Boisterous and warm. Runs the Tavern like a second home for everyone. Has a sharp tongue but a big heart. Knows every rumor in town because everyone talks at her bar. Former adventurer who settled down.",
+		"speech_style": "loud and hearty, laughs a lot, calls everyone 'love' or 'dear'"
+	},
+	{
+		"id": "finn",
+		"name": "Finn",
+		"job": "Farmer",
+		"age": 36,
+		"sprite": "res://assets/sprites/characters/finn_down.png",
+		"home": "House 7",
+		"workplace": "General Store",
+		"personality": "Honest, salt-of-the-earth farmer. Brings produce to Thomas's General Store every morning. Simple but not stupid. Worries about the weather constantly. Married to Clara.",
+		"speech_style": "plain-spoken, talks about crops and weather, uses farming metaphors"
+	},
+	{
+		"id": "clara",
+		"name": "Clara",
+		"job": "Herbalist",
+		"age": 33,
+		"sprite": "res://assets/sprites/characters/clara_down.png",
+		"home": "House 7",
+		"workplace": "Church",
+		"personality": "Quiet and observant herbalist who works out of the Church preparing remedies. Married to Finn. Notices things other people miss. Slightly mysterious — some townsfolk think she's a witch.",
+		"speech_style": "soft-spoken and precise, chooses words carefully, a bit enigmatic"
+	},
+	{
+		"id": "silas",
+		"name": "Old Silas",
+		"job": "Retired",
+		"age": 71,
+		"sprite": "res://assets/sprites/characters/silas_down.png",
+		"home": "House 8",
+		"workplace": "Tavern",
+		"personality": "Grumpy retired miner who spends all day at the Tavern nursing drinks and telling stories about the old days. Complains about everything but secretly loves the town. Has a surprisingly sharp memory despite appearing senile.",
+		"speech_style": "grumbling, rambling, starts every sentence with 'Back in my day' or a complaint"
+	},
+	{
+		"id": "bram",
+		"name": "Bram",
+		"job": "Apprentice Blacksmith",
+		"age": 19,
+		"sprite": "res://assets/sprites/characters/bram_down.png",
+		"home": "House 9",
+		"workplace": "Blacksmith",
+		"personality": "Eager young apprentice learning from Gideon. Enthusiastic to the point of being annoying. Wants to prove himself. Looks up to Gideon but also secretly thinks he could do better. Has a rivalry with Lyra over who's smarter.",
+		"speech_style": "excited and fast, asks too many questions, uses 'absolutely' and 'brilliant' too much"
+	},
+	{
+		"id": "lyra",
+		"name": "Lyra",
+		"job": "Scholar",
+		"age": 25,
+		"sprite": "res://assets/sprites/characters/lyra_down.png",
+		"home": "House 10",
+		"workplace": "Courthouse",
+		"personality": "The town's unofficial record-keeper and teacher. Helps at the Courthouse maintaining town records. Brilliant but socially superior. Loves books more than people. Has a rivalry with Bram. Secretly writes poetry.",
+		"speech_style": "articulate and slightly condescending, uses big words, corrects people's grammar"
 	}
 ]

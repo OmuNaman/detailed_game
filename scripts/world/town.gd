@@ -58,34 +58,84 @@ func _spawn_npcs(town_map: Node2D) -> void:
 
 
 func _save_all_memories() -> void:
-	var save_data: Dictionary = {}
 	for npc: CharacterBody2D in get_tree().get_nodes_in_group("npcs"):
-		save_data[npc.npc_name] = npc.memory.serialize()
+		var folder: String = "user://npc_data/%s/" % npc.npc_name
+		DirAccess.make_dir_recursive_absolute(folder)
 
-	var json_string: String = JSON.stringify(save_data, "\t")
-	var save_file := FileAccess.open("user://npc_memories.json", FileAccess.WRITE)
-	if save_file:
-		save_file.store_string(json_string)
-		print("[SaveManager] Saved %d NPC memory streams" % save_data.size())
-	else:
-		push_warning("[SaveManager] Failed to open npc_memories.json for writing")
+		# 1. Full memory stream
+		var mem_data: Dictionary = npc.memory.serialize()
+		var mem_file := FileAccess.open(folder + "memories.json", FileAccess.WRITE)
+		if mem_file:
+			mem_file.store_string(JSON.stringify(mem_data, "\t"))
+
+		# 2. Conversations only (filtered, human-readable)
+		var conversations: Array[Dictionary] = npc.memory.get_by_type("dialogue")
+		var conv_file := FileAccess.open(folder + "conversations.json", FileAccess.WRITE)
+		if conv_file:
+			var conv_list: Array[Dictionary] = []
+			for conv: Dictionary in conversations:
+				conv_list.append({
+					"time": conv.get("game_time", 0),
+					"with": conv.get("actor", "unknown"),
+					"description": conv.get("description", ""),
+					"location": conv.get("observer_location", ""),
+				})
+			conv_file.store_string(JSON.stringify(conv_list, "\t"))
+
+		# 3. Profile snapshot
+		var profile_file := FileAccess.open(folder + "profile.json", FileAccess.WRITE)
+		if profile_file:
+			var profile: Dictionary = {
+				"name": npc.npc_name,
+				"job": npc.job,
+				"age": npc.age,
+				"personality": npc.personality,
+				"current_location": npc._current_destination,
+				"hunger": snapped(npc.hunger, 0.1),
+				"energy": snapped(npc.energy, 0.1),
+				"social": snapped(npc.social, 0.1),
+				"mood": snapped(npc.get_mood(), 0.1),
+				"total_memories": npc.memory.memories.size(),
+				"total_conversations": npc.memory.get_by_type("dialogue").size(),
+				"total_observations": npc.memory.get_by_type("observation").size(),
+			}
+			profile_file.store_string(JSON.stringify(profile, "\t"))
+
+	print("[SaveManager] Saved %d NPC data folders to user://npc_data/" % get_tree().get_nodes_in_group("npcs").size())
 
 
 func _load_all_memories() -> void:
-	var save_file := FileAccess.open("user://npc_memories.json", FileAccess.READ)
-	if not save_file:
+	# Try loading from new per-NPC folder structure first
+	var loaded_any: bool = false
+	for npc: CharacterBody2D in get_tree().get_nodes_in_group("npcs"):
+		var mem_path: String = "user://npc_data/%s/memories.json" % npc.npc_name
+		var file := FileAccess.open(mem_path, FileAccess.READ)
+		if not file:
+			continue
+		var json := JSON.new()
+		if json.parse(file.get_as_text()) == OK:
+			npc.memory.deserialize(json.data)
+			print("[SaveManager] Loaded %d memories for %s" % [npc.memory.memories.size(), npc.npc_name])
+			loaded_any = true
+
+	if loaded_any:
+		return
+
+	# Backward compatibility: try old flat format (user://npc_memories.json)
+	var old_file := FileAccess.open("user://npc_memories.json", FileAccess.READ)
+	if not old_file:
 		print("[SaveManager] No saved memories found — fresh start")
 		return
 
+	print("[SaveManager] Migrating from old npc_memories.json format...")
 	var json := JSON.new()
-	var err: Error = json.parse(save_file.get_as_text())
-	if err != OK:
+	if json.parse(old_file.get_as_text()) != OK:
 		push_warning("[SaveManager] Failed to parse npc_memories.json")
 		return
 
-	var save_data: Dictionary = json.data
+	var old_data: Dictionary = json.data
 	for npc: CharacterBody2D in get_tree().get_nodes_in_group("npcs"):
-		if save_data.has(npc.npc_name):
-			npc.memory.deserialize(save_data[npc.npc_name])
-			print("[SaveManager] Loaded %d memories for %s" % [
+		if old_data.has(npc.npc_name):
+			npc.memory.deserialize(old_data[npc.npc_name])
+			print("[SaveManager] Migrated %d memories for %s" % [
 				npc.memory.memories.size(), npc.npc_name])

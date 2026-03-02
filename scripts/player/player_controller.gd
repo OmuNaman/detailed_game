@@ -5,6 +5,7 @@ const SPEED: float = 120.0
 var _facing_direction: Vector2 = Vector2.DOWN
 var _is_moving: bool = false
 var _dialogue_box: Node = null
+var _waiting_for_dialogue: bool = false
 
 @onready var sprite: Sprite2D = $Sprite2D
 
@@ -67,20 +68,31 @@ func _handle_interact() -> void:
 		_dialogue_box.hide_dialogue()
 		return
 
+	if _waiting_for_dialogue:
+		return
+
 	# Find nearest NPC within 1.5 tiles (48px)
-	var nearest_npc: Node = null
+	var nearest_npc: CharacterBody2D = null
 	var nearest_dist: float = 48.0
 	for npc: Node in get_tree().get_nodes_in_group("npcs"):
 		var dist: float = global_position.distance_to(npc.global_position)
 		if dist < nearest_dist:
 			nearest_dist = dist
-			nearest_npc = npc
+			nearest_npc = npc as CharacterBody2D
 
 	if nearest_npc == null:
 		return
 
-	var response: String = nearest_npc.get_dialogue_response()
-	_dialogue_box.show_dialogue(nearest_npc.npc_name, response)
+	# Show typing indicator while waiting for LLM response
+	_dialogue_box.show_dialogue(nearest_npc.npc_name, "...")
+	_waiting_for_dialogue = true
+
+	# Request async response (tries Gemini, falls back to template)
+	nearest_npc.get_dialogue_response_async(func(response: String) -> void:
+		_waiting_for_dialogue = false
+		if _dialogue_box:
+			_dialogue_box.show_dialogue(nearest_npc.npc_name, response)
+	)
 
 
 func get_facing_direction() -> Vector2:

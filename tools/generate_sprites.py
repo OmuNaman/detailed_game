@@ -370,6 +370,69 @@ def gen_gideon():
     save(img, "characters", "gideon_down.png")
 
 
+def gen_rose():
+    img, d = new()
+    draw_character(d,
+        hair_color=(180, 40, 40),      # red hair
+        shirt_color=(120, 30, 60),     # deep red dress
+        pants_color=(100, 25, 50),
+        hair_style="bun",
+        shirt_detail=(200, 180, 140))  # tan apron
+    save(img, "characters", "rose_down.png")
+
+
+def gen_finn():
+    img, d = new()
+    draw_character(d,
+        hair_color=(180, 160, 80),     # straw blond
+        shirt_color=(140, 160, 100),   # olive work shirt
+        pants_color=(100, 80, 50),
+        shirt_detail=None)
+    save(img, "characters", "finn_down.png")
+
+
+def gen_clara():
+    img, d = new()
+    draw_character(d,
+        hair_color=(60, 40, 30),       # dark brown
+        shirt_color=(80, 150, 100),    # sage green dress
+        pants_color=(70, 130, 90),
+        hair_style="short")
+    save(img, "characters", "clara_down.png")
+
+
+def gen_silas():
+    img, d = new()
+    draw_character(d,
+        hair_color=(200, 200, 200),    # white/gray
+        shirt_color=(110, 90, 70),     # worn brown
+        pants_color=(80, 70, 55),
+        hair_style="balding",
+        shoe_color=(60, 45, 30))
+    save(img, "characters", "silas_down.png")
+
+
+def gen_bram():
+    img, d = new()
+    draw_character(d,
+        hair_color=(30, 25, 20),       # black hair
+        shirt_color=(130, 90, 60),     # tan work shirt
+        pants_color=(70, 55, 40),
+        wide=True)                     # stocky build
+    save(img, "characters", "bram_down.png")
+
+
+def gen_lyra():
+    img, d = new()
+    draw_character(d,
+        hair_color=(100, 50, 20),      # auburn
+        shirt_color=(70, 60, 110),     # purple tunic
+        pants_color=(55, 45, 85),
+        hair_style="short",
+        shirt_detail=(200, 190, 160))  # book/scroll detail
+    save(img, "characters", "lyra_down.png")
+
+
 # ============================================================
 # Main
 # ============================================================
@@ -400,8 +463,14 @@ def main():
     gen_elena()
     gen_aldric()
     gen_gideon()
+    gen_rose()
+    gen_finn()
+    gen_clara()
+    gen_silas()
+    gen_bram()
+    gen_lyra()
 
-    print(f"\nDone! 16 sprites generated.")
+    print(f"\nDone! 22 sprites generated.")
 
 
 if __name__ == "__main__":

@@ -39,6 +39,12 @@ var _buildings: Array[Dictionary] = [
 	{"name": "House 4", "gx": 23, "gy": 24, "w": 4, "h": 4},
 	{"name": "Blacksmith", "gx": 33, "gy": 16, "w": 5, "h": 4},
 	{"name": "House 5", "gx": 29, "gy": 24, "w": 4, "h": 4},
+	{"name": "House 6", "gx": 35, "gy": 24, "w": 4, "h": 4},
+	{"name": "House 7", "gx": 41, "gy": 24, "w": 4, "h": 4},
+	{"name": "House 8", "gx": 5, "gy": 30, "w": 4, "h": 4},
+	{"name": "House 9", "gx": 11, "gy": 30, "w": 4, "h": 4},
+	{"name": "House 10", "gx": 17, "gy": 30, "w": 4, "h": 4},
+	{"name": "House 11", "gx": 23, "gy": 30, "w": 4, "h": 4},
 ]
 
 # Logical map: stores Tile enum values (GRASS1 for all grass initially)
@@ -177,8 +183,8 @@ func _carve_paths() -> void:
 		_set_tile(25, y, Tile.PATH)
 		_set_tile(26, y, Tile.PATH)
 
-	# Secondary horizontal road (residential area)
-	for x: int in range(3, 35):
+	# Secondary horizontal road (residential area) — extended east for Houses 6-7
+	for x: int in range(3, 44):
 		_set_tile(x, 22, Tile.PATH)
 		_set_tile(x, 23, Tile.PATH)
 
@@ -199,9 +205,24 @@ func _carve_paths() -> void:
 	for y: int in range(14, 15):
 		_set_tile(18, y, Tile.PATH)
 
-	# Paths down to houses from secondary road
-	for hx: int in [6, 12, 18, 24, 30]:
+	# Paths down to houses from secondary road (row y=24)
+	for hx: int in [6, 12, 18, 24, 30, 36, 42]:
 		for y: int in range(22, 25):
+			_set_tile(hx, y, Tile.PATH)
+
+	# Tertiary road for southern houses (row y=30)
+	for x: int in range(3, 28):
+		_set_tile(x, 28, Tile.PATH)
+		_set_tile(x, 29, Tile.PATH)
+
+	# Vertical paths connecting secondary road (y=23) down to tertiary road (y=28)
+	for hx: int in [6, 12, 18, 24]:
+		for y: int in range(24, 29):
+			_set_tile(hx, y, Tile.PATH)
+
+	# Paths from tertiary road down to southern houses (row y=30)
+	for hx: int in [6, 12, 18, 24]:
+		for y: int in range(29, 31):
 			_set_tile(hx, y, Tile.PATH)
 
 	# Path to blacksmith

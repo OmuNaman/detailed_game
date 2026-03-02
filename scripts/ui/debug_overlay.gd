@@ -1,5 +1,5 @@
 extends CanvasLayer
-## Debug overlay toggled with F3. Shows NPC needs, destination, and observation count.
+## Debug overlay toggled with F3. Shows NPC needs, destination, memories, and API cost.
 
 var _visible: bool = false
 
@@ -35,7 +35,7 @@ func _refresh() -> void:
 		var entry: RichTextLabel = RichTextLabel.new()
 		entry.bbcode_enabled = true
 		entry.fit_content = true
-		entry.custom_minimum_size = Vector2(240, 0)
+		entry.custom_minimum_size = Vector2(280, 0)
 		entry.scroll_active = false
 
 		var hunger_bar: String = _make_bar(npc.hunger, "E8A040")
@@ -43,23 +43,43 @@ func _refresh() -> void:
 		var social_bar: String = _make_bar(npc.social, "40C840")
 		var mood_val: float = npc.get_mood()
 		var mem_count: int = npc.memory.memories.size()
+		var conv_count: int = npc.memory.get_by_type("dialogue").size()
 
-		var text: String = "[b]%s[/b] (%s) → %s\nH:%s E:%s S:%s  Mood:%.0f  Mem:%d" % [
-			npc.npc_name, npc.job, npc._current_destination,
+		var text: String = "[b]%s[/b] (%s, %d) → %s\nH:%s E:%s S:%s  Mood:%.0f  Mem:%d  Conv:%d" % [
+			npc.npc_name, npc.job, npc.age, npc._current_destination,
 			hunger_bar, energy_bar, social_bar,
-			mood_val, mem_count
+			mood_val, mem_count, conv_count
 		]
 
-		# Show top 3 most recent memories (truncated)
-		var recent: Array[Dictionary] = npc.memory.get_recent(3)
+		# Show top 2 most recent memories (truncated)
+		var recent: Array[Dictionary] = npc.memory.get_recent(2)
 		for mem: Dictionary in recent:
 			var desc: String = mem.get("description", "")
-			if desc.length() > 40:
-				desc = desc.substr(0, 37) + "..."
+			if desc.length() > 45:
+				desc = desc.substr(0, 42) + "..."
 			text += "\n  [color=#888]%s[/color]" % desc
 
 		entry.text = text
 		_container.add_child(entry)
+
+	# Gemini API cost tracker at the bottom
+	if GeminiClient.total_requests > 0:
+		var cost_entry: RichTextLabel = RichTextLabel.new()
+		cost_entry.bbcode_enabled = true
+		cost_entry.fit_content = true
+		cost_entry.custom_minimum_size = Vector2(280, 0)
+		cost_entry.scroll_active = false
+
+		# Gemini 2.0 Flash pricing: ~$0.10/1M input, ~$0.40/1M output
+		var input_cost: float = GeminiClient.total_input_tokens * 0.10 / 1000000.0
+		var output_cost: float = GeminiClient.total_output_tokens * 0.40 / 1000000.0
+		var total_cost: float = input_cost + output_cost
+
+		cost_entry.text = "\n[color=#AAA]Gemini: %d calls, ~$%.4f est. (%d in / %d out tokens)[/color]" % [
+			GeminiClient.total_requests, total_cost,
+			GeminiClient.total_input_tokens, GeminiClient.total_output_tokens
+		]
+		_container.add_child(cost_entry)
 
 
 func _make_bar(value: float, color: String) -> String:
