@@ -1,7 +1,8 @@
 extends Node2D
 ## Generates the town using TileMapLayer with pixel art sprites.
-## Navigation is handled by a single NavigationRegion2D with shared-vertex quads
-## for each walkable tile, ensuring full connectivity through doors.
+## Navigation is handled natively by TileMapLayer — walkable tiles have
+## NavigationPolygon data in the TileSet, and the GroundLayer auto-builds
+## the navmesh from those tiles.
 
 const TILE_SIZE: int = 32
 const MAP_WIDTH: int = 50
@@ -60,13 +61,13 @@ func _ready() -> void:
 	_ground_layer = TileMapLayer.new()
 	_ground_layer.name = "GroundLayer"
 	_ground_layer.tile_set = _tile_set
-	_ground_layer.navigation_enabled = false  # we use our own NavigationRegion2D
+	_ground_layer.navigation_enabled = true  # TileMapLayer auto-builds navmesh
 	add_child(_ground_layer)
 
 	_building_layer = TileMapLayer.new()
 	_building_layer.name = "BuildingLayer"
 	_building_layer.tile_set = _tile_set
-	_building_layer.navigation_enabled = false
+	_building_layer.navigation_enabled = false  # walls/roofs not navigable
 	add_child(_building_layer)
 
 	_label_layer = Node2D.new()
@@ -78,15 +79,14 @@ func _ready() -> void:
 	_place_buildings()
 	_place_water()
 	_render_map()
-	_build_navigation()
 	_add_building_labels()
 	_add_map_boundary()
 
 
 func _create_tileset() -> TileSet:
 	## Builds a TileSet in code with one atlas source containing all tile sprites.
-	## Non-walkable tiles get physics collision. Navigation is handled separately
-	## by _build_navigation() using a NavigationRegion2D.
+	## Walkable tiles get NavigationPolygon (used by TileMapLayer to auto-build navmesh).
+	## Non-walkable tiles get physics collision.
 	var ts := TileSet.new()
 	ts.tile_size = Vector2i(TILE_SIZE, TILE_SIZE)
 
@@ -94,6 +94,9 @@ func _create_tileset() -> TileSet:
 	ts.add_physics_layer()
 	ts.set_physics_layer_collision_layer(0, 1)
 	ts.set_physics_layer_collision_mask(0, 0)
+
+	# Add navigation layer (index 0) for walkable tiles
+	ts.add_navigation_layer()
 
 	# Atlas source: each tile is a separate 32x32 image loaded as a 1-column atlas
 	var source := TileSetAtlasSource.new()
@@ -124,7 +127,7 @@ func _create_tileset() -> TileSet:
 	source.texture = atlas_tex
 
 	# CRITICAL: add source to TileSet BEFORE creating tiles, so TileData
-	# knows about physics layers (fixes "out of bounds" errors)
+	# knows about physics AND navigation layers
 	ts.add_source(source)
 
 	# Collision polygon points (relative to tile CENTER)
@@ -133,6 +136,14 @@ func _create_tileset() -> TileSet:
 		Vector2(-hs, -hs), Vector2(hs, -hs),
 		Vector2(hs, hs), Vector2(-hs, hs),
 	])
+
+	# Navigation polygon for walkable tiles (coordinates relative to tile center)
+	var walkable_nav_poly := NavigationPolygon.new()
+	walkable_nav_poly.vertices = PackedVector2Array([
+		Vector2(-hs, -hs), Vector2(hs, -hs),
+		Vector2(hs, hs), Vector2(-hs, hs),
+	])
+	walkable_nav_poly.add_polygon(PackedInt32Array([0, 1, 2, 3]))
 
 	# Create tile data for each tile
 	for i: int in range(tile_paths.size()):
@@ -146,7 +157,9 @@ func _create_tileset() -> TileSet:
 			i == Tile.FLOOR or i == Tile.DOOR
 		)
 
-		if not is_walkable:
+		if is_walkable:
+			tile_data.set_navigation_polygon(0, walkable_nav_poly)
+		else:
 			# Non-walkable: add physics collision so player can't walk through
 			tile_data.add_collision_polygon(0)
 			tile_data.set_collision_polygon_points(0, 0, collision_points)
@@ -283,39 +296,6 @@ func _render_map() -> void:
 				data.modulate = tint
 
 
-func _build_navigation() -> void:
-	## Creates a single NavigationRegion2D covering all walkable tiles.
-	## Each walkable tile becomes a quad polygon. Adjacent tiles share corner
-	## vertices, so NavigationServer2D automatically connects them within the
-	## same region — no edge-matching margin needed.
-	var nav_poly := NavigationPolygon.new()
-
-	# Vertex grid: one vertex per tile corner = (MAP_WIDTH+1) * (MAP_HEIGHT+1)
-	var cols: int = MAP_WIDTH + 1
-	var verts := PackedVector2Array()
-	verts.resize(cols * (MAP_HEIGHT + 1))
-	for y: int in range(MAP_HEIGHT + 1):
-		for x: int in range(cols):
-			verts[y * cols + x] = Vector2(x * TILE_SIZE, y * TILE_SIZE)
-	nav_poly.vertices = verts
-
-	# Add a quad for each walkable tile using shared corner vertices
-	for y: int in range(MAP_HEIGHT):
-		for x: int in range(MAP_WIDTH):
-			var tile_id: int = _map[y][x]
-			if tile_id == Tile.GRASS1 or tile_id == Tile.PATH or tile_id == Tile.FLOOR or tile_id == Tile.DOOR:
-				var tl: int = y * cols + x
-				var tr: int = tl + 1
-				var bl: int = (y + 1) * cols + x
-				var br: int = bl + 1
-				nav_poly.add_polygon(PackedInt32Array([tl, tr, br, bl]))
-
-	var nav_region := NavigationRegion2D.new()
-	nav_region.name = "NavRegion"
-	nav_region.navigation_polygon = nav_poly
-	add_child(nav_region)
-
-
 func _add_building_labels() -> void:
 	for bld: Dictionary in _buildings:
 		var gx: int = bld["gx"]
@@ -357,16 +337,20 @@ func _add_map_boundary() -> void:
 
 
 func get_building_door_positions() -> Dictionary:
-	## Returns {building_name: Vector2} — center of each building's interior floor.
+	## Returns {building_name: Vector2} — the DOOR tile position of each building.
+	## Targets the door (bottom center), not the building interior center.
 	var positions: Dictionary = {}
 	for bld: Dictionary in _buildings:
 		var gx: int = bld["gx"]
 		var gy: int = bld["gy"]
 		var w: int = bld["w"]
 		var h: int = bld["h"]
+		# Door is at bottom center of building, centered in that tile
+		var door_x: int = gx + w / 2
+		var door_y: int = gy + h - 1
 		var pos := Vector2(
-			(gx + w / 2.0) * TILE_SIZE,
-			(gy + h / 2.0) * TILE_SIZE
+			door_x * TILE_SIZE + TILE_SIZE / 2.0,
+			door_y * TILE_SIZE + TILE_SIZE / 2.0
 		)
 		positions[bld["name"]] = pos
 	return positions

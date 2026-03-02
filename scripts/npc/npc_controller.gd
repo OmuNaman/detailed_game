@@ -13,6 +13,7 @@ var _current_destination: String = ""
 var _is_navigating: bool = false
 var _building_positions: Dictionary = {}
 var _nav_retry_timer: float = 0.0
+var _nav_ready: bool = false
 
 @onready var sprite: Sprite2D = $Sprite2D
 @onready var nav_agent: NavigationAgent2D = $NavigationAgent2D
@@ -43,17 +44,29 @@ func _ready() -> void:
 
 	EventBus.time_hour_changed.connect(_on_hour_changed)
 
-	# NavigationServer needs multiple frames to build navmesh from TileMapLayer
-	for i: int in range(3):
+	# TileMapLayer builds its navmesh asynchronously after entering the tree.
+	# Wait several physics frames to ensure NavigationServer has fully synced.
+	_wait_for_navigation()
+
+
+func _wait_for_navigation() -> void:
+	for i: int in range(10):
 		await get_tree().physics_frame
+
+	_nav_ready = true
+	print("[%s] Navigation ready. Current hour: %d" % [npc_name, GameClock.hour])
 	_update_destination(GameClock.hour)
 
 
 func _physics_process(delta: float) -> void:
+	if not _nav_ready:
+		return
+
 	# Retry navigation if path wasn't found on first attempt
 	if _nav_retry_timer > 0.0:
 		_nav_retry_timer -= delta
 		if _nav_retry_timer <= 0.0:
+			print("[%s] Retrying navigation to '%s'" % [npc_name, _current_destination])
 			_current_destination = ""  # force re-evaluation
 			_update_destination(GameClock.hour)
 		return
@@ -81,10 +94,12 @@ func _physics_process(delta: float) -> void:
 func _on_navigation_finished() -> void:
 	_is_navigating = false
 	velocity = Vector2.ZERO
+	print("[%s] Arrived at '%s'" % [npc_name, _current_destination])
 
 
 func _on_hour_changed(hour: int) -> void:
-	_update_destination(hour)
+	if _nav_ready:
+		_update_destination(hour)
 
 
 func _update_destination(hour: int) -> void:
@@ -98,13 +113,17 @@ func _update_destination(hour: int) -> void:
 		push_warning("%s: no position found for building '%s'" % [npc_name, dest])
 		return
 
+	print("[%s] Hour %d -> heading to '%s' at %s (from %s)" % [
+		npc_name, hour, dest, target, global_position])
+
 	nav_agent.target_position = target
 	_is_navigating = true
 
-	# If nav agent can't find a path, retry in 2 seconds
+	# Check if navigation actually started after a couple frames
 	await get_tree().physics_frame
 	await get_tree().physics_frame
 	if nav_agent.is_navigation_finished() and global_position.distance_to(target) > nav_agent.target_desired_distance:
+		push_warning("[%s] Navigation failed to '%s' — will retry in 2s" % [npc_name, dest])
 		_is_navigating = false
 		_nav_retry_timer = 2.0
 
