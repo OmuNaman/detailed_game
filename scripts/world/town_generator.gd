@@ -3,11 +3,12 @@ extends Node2D
 ## Pathfinding uses AStarGrid2D directly on the tile grid — no NavigationServer needed.
 
 const TILE_SIZE: int = 32
-const MAP_WIDTH: int = 50
-const MAP_HEIGHT: int = 40
+const MAP_WIDTH: int = 60
+const MAP_HEIGHT: int = 45
 
 # Tile IDs (used in the _map array and as TileSet atlas coords)
-enum Tile { GRASS1, PATH, WATER, WALL_FRONT, FLOOR, ROOF, DOOR, GRASS2, GRASS3, WALL_SIDE }
+enum Tile { GRASS1, PATH, WATER, WALL_FRONT, FLOOR, ROOF, DOOR, GRASS2, GRASS3, WALL_SIDE,
+	COBBLESTONE, DIRT_PATH }
 # Atlas layout: each tile gets column = Tile enum value, row = 0
 
 # Grass variant weights for visual variety
@@ -27,24 +28,28 @@ const ROOF_TINTS: Dictionary = {
 
 # Building definitions: {name, grid_x, grid_y, width, height}
 var _buildings: Array[Dictionary] = [
-	{"name": "General Store", "gx": 8, "gy": 6, "w": 6, "h": 5},
-	{"name": "Bakery", "gx": 16, "gy": 6, "w": 5, "h": 4},
-	{"name": "Tavern", "gx": 23, "gy": 5, "w": 7, "h": 5},
-	{"name": "Sheriff Office", "gx": 8, "gy": 15, "w": 5, "h": 4},
-	{"name": "Courthouse", "gx": 15, "gy": 15, "w": 7, "h": 5},
-	{"name": "Church", "gx": 32, "gy": 5, "w": 6, "h": 7},
-	{"name": "House 1", "gx": 5, "gy": 24, "w": 4, "h": 4},
-	{"name": "House 2", "gx": 11, "gy": 24, "w": 4, "h": 4},
-	{"name": "House 3", "gx": 17, "gy": 24, "w": 4, "h": 4},
-	{"name": "House 4", "gx": 23, "gy": 24, "w": 4, "h": 4},
-	{"name": "Blacksmith", "gx": 33, "gy": 16, "w": 5, "h": 4},
-	{"name": "House 5", "gx": 29, "gy": 24, "w": 4, "h": 4},
-	{"name": "House 6", "gx": 35, "gy": 24, "w": 4, "h": 4},
-	{"name": "House 7", "gx": 41, "gy": 24, "w": 4, "h": 4},
-	{"name": "House 8", "gx": 5, "gy": 30, "w": 4, "h": 4},
-	{"name": "House 9", "gx": 11, "gy": 30, "w": 4, "h": 4},
-	{"name": "House 10", "gx": 17, "gy": 30, "w": 4, "h": 4},
-	{"name": "House 11", "gx": 23, "gy": 30, "w": 4, "h": 4},
+	# --- Commercial row (top) ---
+	{"name": "General Store", "gx": 8, "gy": 6, "w": 7, "h": 5},
+	{"name": "Bakery", "gx": 17, "gy": 6, "w": 6, "h": 5},
+	{"name": "Tavern", "gx": 25, "gy": 5, "w": 8, "h": 6},
+	{"name": "Church", "gx": 38, "gy": 5, "w": 7, "h": 8},
+	# --- Service row (middle) ---
+	{"name": "Sheriff Office", "gx": 8, "gy": 15, "w": 6, "h": 5},
+	{"name": "Courthouse", "gx": 16, "gy": 15, "w": 8, "h": 5},
+	{"name": "Blacksmith", "gx": 38, "gy": 16, "w": 6, "h": 5},
+	# --- Housing row 1 ---
+	{"name": "House 1", "gx": 4, "gy": 25, "w": 6, "h": 5},
+	{"name": "House 2", "gx": 12, "gy": 25, "w": 6, "h": 5},
+	{"name": "House 3", "gx": 20, "gy": 25, "w": 6, "h": 5},
+	{"name": "House 4", "gx": 28, "gy": 25, "w": 6, "h": 5},
+	{"name": "House 5", "gx": 36, "gy": 25, "w": 6, "h": 5},
+	{"name": "House 6", "gx": 44, "gy": 25, "w": 6, "h": 5},
+	# --- Housing row 2 ---
+	{"name": "House 7", "gx": 4, "gy": 33, "w": 6, "h": 5},
+	{"name": "House 8", "gx": 12, "gy": 33, "w": 6, "h": 5},
+	{"name": "House 9", "gx": 20, "gy": 33, "w": 6, "h": 5},
+	{"name": "House 10", "gx": 28, "gy": 33, "w": 6, "h": 5},
+	{"name": "House 11", "gx": 36, "gy": 33, "w": 6, "h": 5},
 ]
 
 # Logical map: stores Tile enum values (GRASS1 for all grass initially)
@@ -119,6 +124,8 @@ func _create_tileset() -> TileSet:
 		"res://assets/sprites/tiles/grass_2.png",     # 7 = GRASS2
 		"res://assets/sprites/tiles/grass_3.png",     # 8 = GRASS3
 		"res://assets/sprites/tiles/wall_side.png",   # 9 = WALL_SIDE
+		"res://assets/sprites/tiles/cobblestone.png", # 10 = COBBLESTONE
+		"res://assets/sprites/tiles/dirt_path.png",   # 11 = DIRT_PATH
 	]
 
 	# Build a horizontal atlas image (N tiles wide, 1 tile tall)
@@ -151,7 +158,8 @@ func _create_tileset() -> TileSet:
 		var is_walkable: bool = (
 			i == Tile.GRASS1 or i == Tile.GRASS2 or
 			i == Tile.GRASS3 or i == Tile.PATH or
-			i == Tile.FLOOR or i == Tile.DOOR
+			i == Tile.FLOOR or i == Tile.DOOR or
+			i == Tile.COBBLESTONE or i == Tile.DIRT_PATH
 		)
 
 		if not is_walkable:
@@ -173,61 +181,47 @@ func _init_map() -> void:
 
 
 func _carve_paths() -> void:
-	# Main horizontal road
+	# === MAIN ROADS (cobblestone) ===
+	# East-west highway
 	for x: int in range(2, MAP_WIDTH - 2):
-		_set_tile(x, 12, Tile.PATH)
-		_set_tile(x, 13, Tile.PATH)
-
-	# Main vertical road
+		_set_tile(x, 12, Tile.COBBLESTONE)
+		_set_tile(x, 13, Tile.COBBLESTONE)
+	# North-south highway
 	for y: int in range(2, MAP_HEIGHT - 2):
-		_set_tile(25, y, Tile.PATH)
-		_set_tile(26, y, Tile.PATH)
+		_set_tile(29, y, Tile.COBBLESTONE)
+		_set_tile(30, y, Tile.COBBLESTONE)
 
-	# Secondary horizontal road (residential area) — extended east for Houses 6-7
-	for x: int in range(3, 44):
-		_set_tile(x, 22, Tile.PATH)
-		_set_tile(x, 23, Tile.PATH)
+	# === HOUSING STREETS (dirt) ===
+	for x: int in range(2, MAP_WIDTH - 2):
+		_set_tile(x, 23, Tile.DIRT_PATH)
+		_set_tile(x, 24, Tile.DIRT_PATH)
+	for x: int in range(2, MAP_WIDTH - 2):
+		_set_tile(x, 31, Tile.DIRT_PATH)
+		_set_tile(x, 32, Tile.DIRT_PATH)
 
-	# Connecting paths to buildings
-	for y: int in range(11, 13):
-		_set_tile(10, y, Tile.PATH)
-		_set_tile(11, y, Tile.PATH)
-
-	for y: int in range(10, 13):
-		_set_tile(18, y, Tile.PATH)
-
-	for y: int in range(10, 13):
-		_set_tile(26, y, Tile.PATH)
-
-	for y: int in range(14, 15):
-		_set_tile(10, y, Tile.PATH)
-
-	for y: int in range(14, 15):
-		_set_tile(18, y, Tile.PATH)
-
-	# Paths down to houses from secondary road (row y=24)
-	for hx: int in [6, 12, 18, 24, 30, 36, 42]:
-		for y: int in range(22, 25):
-			_set_tile(hx, y, Tile.PATH)
-
-	# Tertiary road for southern houses (row y=30)
-	for x: int in range(3, 28):
-		_set_tile(x, 28, Tile.PATH)
-		_set_tile(x, 29, Tile.PATH)
-
-	# Vertical paths connecting secondary road (y=23) down to tertiary road (y=28)
-	for hx: int in [6, 12, 18, 24]:
-		for y: int in range(24, 29):
-			_set_tile(hx, y, Tile.PATH)
-
-	# Paths from tertiary road down to southern houses (row y=30)
-	for hx: int in [6, 12, 18, 24]:
-		for y: int in range(29, 31):
-			_set_tile(hx, y, Tile.PATH)
-
-	# Path to blacksmith
-	for y: int in range(14, 16):
-		_set_tile(35, y, Tile.PATH)
+	# === CONNECTORS (dirt) ===
+	# To commercial buildings
+	for y: int in range(10, 14):
+		_set_tile(11, y, Tile.DIRT_PATH)
+		_set_tile(20, y, Tile.DIRT_PATH)
+		_set_tile(41, y, Tile.DIRT_PATH)
+	# To service buildings
+	for y: int in range(13, 20):
+		_set_tile(11, y, Tile.DIRT_PATH)
+		_set_tile(20, y, Tile.DIRT_PATH)
+		_set_tile(41, y, Tile.DIRT_PATH)
+	# To housing row 1
+	for y: int in range(24, 27):
+		for hx: int in [7, 15, 23, 31, 39, 47]:
+			_set_tile(hx, y, Tile.DIRT_PATH)
+	# Between housing rows
+	for y: int in range(24, 33):
+		for hx: int in [7, 15, 23, 31, 39]:
+			_set_tile(hx, y, Tile.DIRT_PATH)
+	# To housing row 2
+	for y: int in range(32, 35):
+		for hx: int in [7, 15, 23, 31, 39]:
+			_set_tile(hx, y, Tile.DIRT_PATH)
 
 
 func _place_buildings() -> void:
@@ -257,11 +251,11 @@ func _place_buildings() -> void:
 
 
 func _place_water() -> void:
-	for y: int in range(30, 35):
-		for x: int in range(38, 45):
-			var dx: float = x - 41.5
-			var dy: float = y - 32.5
-			if dx * dx + dy * dy < 12.0:
+	for y: int in range(36, 42):
+		for x: int in range(46, 55):
+			var dx: float = x - 50.5
+			var dy: float = y - 39.0
+			if dx * dx + dy * dy < 16.0:
 				_set_tile(x, y, Tile.WATER)
 
 
@@ -324,7 +318,8 @@ func _build_astar() -> void:
 			var is_walkable: bool = (
 				tile_id == Tile.GRASS1 or tile_id == Tile.GRASS2 or
 				tile_id == Tile.GRASS3 or tile_id == Tile.PATH or
-				tile_id == Tile.FLOOR or tile_id == Tile.DOOR
+				tile_id == Tile.FLOOR or tile_id == Tile.DOOR or
+				tile_id == Tile.COBBLESTONE or tile_id == Tile.DIRT_PATH
 			)
 			if not is_walkable:
 				_astar.set_point_solid(Vector2i(x, y), true)
@@ -455,4 +450,4 @@ func get_unreserved_interior_tile(building_name: String, npc_name: String) -> Ve
 
 
 func get_player_spawn_position() -> Vector2:
-	return Vector2(25 * TILE_SIZE + TILE_SIZE / 2.0, 13 * TILE_SIZE + TILE_SIZE / 2.0)
+	return Vector2(29 * TILE_SIZE + TILE_SIZE / 2.0, 13 * TILE_SIZE + TILE_SIZE / 2.0)

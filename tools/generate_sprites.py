@@ -58,6 +58,17 @@ DOOR_HANDLE = (200, 180, 60)
 SKIN        = (240, 200, 160)
 SKIN_SHADOW = (212, 168, 120)
 
+# Cobblestone road
+COBBLE_BASE  = (140, 135, 125)
+COBBLE_LIGHT = (165, 160, 148)
+COBBLE_DARK  = (110, 105, 95)
+COBBLE_LINE  = (95, 90, 80)
+
+# Dirt path
+DIRT_BASE    = (170, 145, 100)
+DIRT_DARK    = (145, 120, 78)
+DIRT_LIGHT   = (190, 168, 125)
+
 # Common
 BLACK       = (40, 40, 40)
 WHITE       = (245, 245, 240)
@@ -235,6 +246,47 @@ def gen_roof():
         for sx in range(offset, 32, 16):
             d.line([(sx, y), (sx, y+7)], fill=ROOF_DARK)
     save(img, "tiles", "roof_generic.png")
+
+
+def gen_cobblestone():
+    """Cobblestone road — main streets. Irregular rounded stones."""
+    img, d = new()
+    img.paste(COBBLE_BASE, (0, 0, S, S))
+    stones = [
+        (1, 1, 8, 6), (10, 0, 18, 5), (20, 1, 30, 7),
+        (0, 8, 7, 14), (9, 7, 17, 13), (19, 8, 28, 14), (29, 9, 31, 13),
+        (2, 16, 10, 22), (12, 15, 20, 21), (22, 16, 31, 22),
+        (0, 24, 8, 30), (10, 23, 19, 29), (21, 24, 30, 31),
+    ]
+    for (x1, y1, x2, y2) in stones:
+        d.rectangle([x1, y1, x2, y2], fill=COBBLE_LIGHT)
+        d.line([(x1, y2), (x2, y2)], fill=COBBLE_DARK)
+        d.line([(x2, y1), (x2, y2)], fill=COBBLE_DARK)
+    for (x1, y1, x2, y2) in stones:
+        d.line([(x1, y1), (x2, y1)], fill=COBBLE_LINE)
+        d.line([(x1, y1), (x1, y2)], fill=COBBLE_LINE)
+    for x, y in [(5, 4), (15, 11), (25, 19), (8, 27), (18, 3)]:
+        d.point((x, y), fill=COBBLE_DARK)
+    save(img, "tiles", "cobblestone.png")
+
+
+def gen_dirt_path():
+    """Worn dirt path — secondary roads. Sandy brown with footprints/tracks."""
+    img, d = new()
+    img.paste(DIRT_BASE, (0, 0, S, S))
+    for x, y in [(4, 3), (12, 7), (22, 5), (28, 12), (6, 18), (16, 14),
+                  (24, 20), (8, 26), (18, 24), (30, 28), (2, 12), (14, 30)]:
+        d.point((x, y), fill=DIRT_DARK)
+    for x, y in [(7, 5), (16, 10), (26, 8), (10, 22), (20, 16), (4, 28)]:
+        d.point((x, y), fill=DIRT_LIGHT)
+    for sy in range(0, 32, 2):
+        d.point((10, sy), fill=DIRT_DARK)
+        d.point((21, sy), fill=DIRT_DARK)
+    d.point((0, 8), fill=GRASS_DARK)
+    d.point((31, 20), fill=GRASS_DARK)
+    d.point((1, 24), fill=GRASS)
+    d.point((30, 4), fill=GRASS)
+    save(img, "tiles", "dirt_path.png")
 
 
 # ============================================================
@@ -454,6 +506,8 @@ def main():
     gen_floor()
     gen_door()
     gen_roof()
+    gen_cobblestone()
+    gen_dirt_path()
 
     # Characters
     print("\n[Characters]")
@@ -470,7 +524,7 @@ def main():
     gen_bram()
     gen_lyra()
 
-    print(f"\nDone! 22 sprites generated.")
+    print(f"\nDone! 24 sprites generated.")
 
 
 if __name__ == "__main__":
