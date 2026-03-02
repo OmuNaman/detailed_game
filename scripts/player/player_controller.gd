@@ -4,8 +4,13 @@ const SPEED: float = 120.0
 
 var _facing_direction: Vector2 = Vector2.DOWN
 var _is_moving: bool = false
+var _dialogue_box: Node = null
 
 @onready var sprite: Sprite2D = $Sprite2D
+
+
+func _ready() -> void:
+	add_to_group("player")
 
 
 func _physics_process(_delta: float) -> void:
@@ -44,6 +49,57 @@ func _update_sprite() -> void:
 		sprite.modulate.a = 1.0
 	else:
 		sprite.modulate.a = 0.85
+
+
+func _unhandled_input(event: InputEvent) -> void:
+	if event.is_action_pressed("interact"):
+		_handle_interact()
+
+
+func _handle_interact() -> void:
+	if _dialogue_box == null:
+		_dialogue_box = get_tree().get_first_node_in_group("dialogue_box")
+	if _dialogue_box == null:
+		return
+
+	# Toggle off if already showing
+	if _dialogue_box.is_showing:
+		_dialogue_box.hide_dialogue()
+		return
+
+	# Find nearest NPC within 1.5 tiles (48px)
+	var nearest_npc: Node = null
+	var nearest_dist: float = 48.0
+	for npc: Node in get_tree().get_nodes_in_group("npcs"):
+		var dist: float = global_position.distance_to(npc.global_position)
+		if dist < nearest_dist:
+			nearest_dist = dist
+			nearest_npc = npc
+
+	if nearest_npc == null:
+		return
+
+	var response: String = _generate_npc_response(nearest_npc)
+	_dialogue_box.show_dialogue(nearest_npc.npc_name, response)
+
+
+func _generate_npc_response(npc: Node) -> String:
+	if npc.energy < 20.0:
+		return "*yawns* I'm exhausted... heading home to rest."
+	if npc.hunger < 20.0:
+		return "I'm starving, need to go eat."
+
+	# Check if NPC has observed the player recently
+	for obs: Dictionary in npc.observations:
+		if obs.get("actor", "") == "Player":
+			return "I saw you near the %s earlier." % obs.get("location", "town")
+
+	var mood: float = npc.get_mood()
+	if mood > 70.0:
+		return "Beautiful day, isn't it? Work at the %s is going well." % npc.workplace_building
+	if mood > 40.0:
+		return "Just another day at the %s." % npc.workplace_building
+	return "I'm not feeling great today..."
 
 
 func get_facing_direction() -> Vector2:
