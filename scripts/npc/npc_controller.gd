@@ -7,7 +7,7 @@ var npc_name: String = ""
 var job: String = ""
 var home_building: String = ""
 var workplace_building: String = ""
-var npc_color: Color = Color.WHITE
+var sprite_path: String = ""
 
 var _current_destination: String = ""
 var _is_navigating: bool = false
@@ -24,15 +24,16 @@ func initialize(data: Dictionary, building_positions: Dictionary) -> void:
 	job = data.get("job", "")
 	home_building = data.get("home", "")
 	workplace_building = data.get("workplace", "")
-
-	var color_arr: Array = data.get("color", [1.0, 1.0, 1.0])
-	npc_color = Color(color_arr[0], color_arr[1], color_arr[2])
+	sprite_path = data.get("sprite", "")
 
 	_building_positions = building_positions
 
 
 func _ready() -> void:
-	sprite.modulate = npc_color
+	if sprite_path != "":
+		var tex: Texture2D = load(sprite_path)
+		if tex:
+			sprite.texture = tex
 	name_label.text = npc_name
 
 	nav_agent.path_desired_distance = 8.0
