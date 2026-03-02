@@ -14,6 +14,17 @@ func _ready() -> void:
 	_spawn_npcs(town_map)
 
 
+func _notification(what: int) -> void:
+	if what == NOTIFICATION_WM_CLOSE_REQUEST:
+		_save_all_memories()
+
+
+func _unhandled_input(event: InputEvent) -> void:
+	if event.is_action_pressed("quicksave"):
+		_save_all_memories()
+		print("[SaveManager] Manual save triggered (F5)")
+
+
 func _spawn_npcs(town_map: Node2D) -> void:
 	var building_positions: Dictionary = town_map.get_building_door_positions()
 	var building_interiors: Dictionary = town_map.get_building_interior_positions()
@@ -41,3 +52,40 @@ func _spawn_npcs(town_map: Node2D) -> void:
 		npc.position = home_pos
 
 		add_child(npc)
+
+	# Load saved memories after all NPCs are in the scene tree
+	_load_all_memories()
+
+
+func _save_all_memories() -> void:
+	var save_data: Dictionary = {}
+	for npc: CharacterBody2D in get_tree().get_nodes_in_group("npcs"):
+		save_data[npc.npc_name] = npc.memory.serialize()
+
+	var json_string: String = JSON.stringify(save_data, "\t")
+	var save_file := FileAccess.open("user://npc_memories.json", FileAccess.WRITE)
+	if save_file:
+		save_file.store_string(json_string)
+		print("[SaveManager] Saved %d NPC memory streams" % save_data.size())
+	else:
+		push_warning("[SaveManager] Failed to open npc_memories.json for writing")
+
+
+func _load_all_memories() -> void:
+	var save_file := FileAccess.open("user://npc_memories.json", FileAccess.READ)
+	if not save_file:
+		print("[SaveManager] No saved memories found — fresh start")
+		return
+
+	var json := JSON.new()
+	var err: Error = json.parse(save_file.get_as_text())
+	if err != OK:
+		push_warning("[SaveManager] Failed to parse npc_memories.json")
+		return
+
+	var save_data: Dictionary = json.data
+	for npc: CharacterBody2D in get_tree().get_nodes_in_group("npcs"):
+		if save_data.has(npc.npc_name):
+			npc.memory.deserialize(save_data[npc.npc_name])
+			print("[SaveManager] Loaded %d memories for %s" % [
+				npc.memory.memories.size(), npc.npc_name])

@@ -79,27 +79,8 @@ func _handle_interact() -> void:
 	if nearest_npc == null:
 		return
 
-	var response: String = _generate_npc_response(nearest_npc)
+	var response: String = nearest_npc.get_dialogue_response()
 	_dialogue_box.show_dialogue(nearest_npc.npc_name, response)
-
-
-func _generate_npc_response(npc: Node) -> String:
-	if npc.energy < 20.0:
-		return "*yawns* I'm exhausted... heading home to rest."
-	if npc.hunger < 20.0:
-		return "I'm starving, need to go eat."
-
-	# Check if NPC has observed the player recently
-	for obs: Dictionary in npc.observations:
-		if obs.get("actor", "") == "Player":
-			return "I saw you near the %s earlier." % obs.get("location", "town")
-
-	var mood: float = npc.get_mood()
-	if mood > 70.0:
-		return "Beautiful day, isn't it? Work at the %s is going well." % npc.workplace_building
-	if mood > 40.0:
-		return "Just another day at the %s." % npc.workplace_building
-	return "I'm not feeling great today..."
 
 
 func get_facing_direction() -> Vector2:

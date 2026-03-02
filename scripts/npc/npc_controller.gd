@@ -1,6 +1,7 @@
 extends CharacterBody2D
 ## Controls a single NPC: schedule-driven movement between buildings.
 ## Uses AStarGrid2D waypoint-following instead of NavigationAgent2D.
+## Memory Stream replaces the old flat observation array with scored retrieval.
 
 const SPEED: float = 80.0
 const TILE_SIZE: int = 32
@@ -20,10 +21,9 @@ var hunger: float = 100.0
 var energy: float = 100.0
 var social: float = 100.0
 
-# Observation system
-var observations: Array[Dictionary] = []
+# Memory Stream (replaces old observations array)
+var memory: MemoryStream = MemoryStream.new()
 var _observation_cooldowns: Dictionary = {}  # {actor_name: last_observed_game_minute}
-const MAX_OBSERVATIONS: int = 50
 const OBSERVATION_COOLDOWN_MINUTES: int = 60
 
 # A* waypoint following
@@ -145,9 +145,48 @@ func _on_time_tick(_game_minute: int) -> void:
 	if (hunger < 20.0 or energy < 20.0) and _current_destination != home_building:
 		_update_destination(GameClock.hour)
 
+	# Periodic perception scan every 30 game minutes (fix for already-overlapping bodies)
+	if GameClock.total_minutes % 30 == 0:
+		_scan_perception_area()
+
 
 func get_mood() -> float:
 	return (hunger + energy + social) / 3.0
+
+
+func get_dialogue_response() -> String:
+	## Generates a context-aware response using memory retrieval.
+	## Called by player_controller.gd when player presses E.
+
+	# Emergency states take priority
+	if energy < 20.0:
+		return "*yawns* I'm exhausted... heading home to rest."
+	if hunger < 20.0:
+		return "I'm starving, need to go eat."
+
+	# Try memory-based response using player memories
+	var player_memories: Array[Dictionary] = memory.get_memories_about("Player")
+
+	if not player_memories.is_empty():
+		# Use the most recent player memory
+		var latest: Dictionary = player_memories[-1]
+		var location: String = latest.get("observed_near", latest.get("observer_location", "town"))
+		var hours_ago: int = (GameClock.total_minutes - latest.get("game_time", 0)) / 60
+		if hours_ago < 1:
+			return "Oh, I just saw you over by the %s! What brings you here?" % location
+		elif hours_ago < 12:
+			return "I saw you near the %s earlier today. How's your day going?" % location
+		else:
+			return "I remember seeing you around the %s a while back." % location
+
+	# Mood-based fallback
+	var mood: float = get_mood()
+	if mood > 70.0:
+		return "Beautiful day, isn't it? Work at the %s is going well." % workplace_building
+	elif mood > 40.0:
+		return "Just another day at the %s." % workplace_building
+	else:
+		return "I'm not feeling great today..."
 
 
 func _update_destination(hour: int) -> void:
@@ -222,32 +261,66 @@ func _on_perception_body_entered(body: Node2D) -> void:
 		return
 
 	var actor_name: String = ""
-	var importance: int = 2
-	if body.is_in_group("npcs"):
-		actor_name = body.npc_name
-	elif body.is_in_group("player"):
+	if body.is_in_group("player"):
 		actor_name = "Player"
-		importance = 5
+	elif body.is_in_group("npcs"):
+		actor_name = body.npc_name
 	else:
 		return
 
 	# Cooldown: don't re-observe same actor within 60 game minutes
+	var current_time: int = GameClock.total_minutes
 	if _observation_cooldowns.has(actor_name):
-		var last_time: int = _observation_cooldowns[actor_name]
-		if GameClock.total_minutes - last_time < OBSERVATION_COOLDOWN_MINUTES:
+		if current_time - _observation_cooldowns[actor_name] < OBSERVATION_COOLDOWN_MINUTES:
 			return
+	_observation_cooldowns[actor_name] = current_time
 
-	_observation_cooldowns[actor_name] = GameClock.total_minutes
+	# Determine where the observed entity actually is (not where WE are)
+	var observed_location: String = _estimate_location(body.global_position)
+	var my_location: String = _current_destination
 
-	var observation: Dictionary = {
-		"description": "Saw %s near %s" % [actor_name, _current_destination],
-		"actor": actor_name,
-		"location": _current_destination,
-		"game_time": GameClock.total_minutes,
-		"importance": importance,
-	}
-	observations.append(observation)
+	var importance: float = 2.0  # Default for NPC sightings
+	var valence: float = 0.0     # Neutral
+	if actor_name == "Player":
+		importance = 5.0
+		valence = 0.1  # Slightly positive — player is interesting
 
-	# Cap at max observations
-	if observations.size() > MAX_OBSERVATIONS:
-		observations.pop_front()
+	var description: String = "Saw %s near the %s" % [actor_name, observed_location]
+
+	# Create memory with async embedding
+	_add_memory_with_embedding(description, "observation", actor_name,
+		[npc_name, actor_name], my_location, observed_location, importance, valence)
+
+
+func _estimate_location(pos: Vector2) -> String:
+	## Returns the name of the nearest building to a world position.
+	var closest_name: String = "town center"
+	var closest_dist: float = INF
+	for bld_name: String in _building_positions:
+		var bld_pos: Vector2 = _building_positions[bld_name]
+		var dist: float = pos.distance_to(bld_pos)
+		if dist < closest_dist:
+			closest_dist = dist
+			closest_name = bld_name
+	return closest_name
+
+
+func _add_memory_with_embedding(description: String, type: String, actor: String,
+		participants: Array[String], observer_loc: String, observed_loc: String,
+		importance: float, valence: float) -> void:
+	## Creates the memory record immediately (with empty embedding),
+	## then fires off an async embedding request that updates in-place.
+	var mem: Dictionary = memory.add_memory(description, type, actor, participants,
+		observer_loc, observed_loc, importance, valence)
+
+	# Fire async embedding request
+	EmbeddingClient.embed_text(description, func(embedding: PackedFloat32Array) -> void:
+		mem["embedding"] = embedding
+	)
+
+
+func _scan_perception_area() -> void:
+	## Re-check bodies already inside PerceptionArea. Cooldowns prevent duplicates.
+	var perception: Area2D = $PerceptionArea
+	for body: Node2D in perception.get_overlapping_bodies():
+		_on_perception_body_entered(body)

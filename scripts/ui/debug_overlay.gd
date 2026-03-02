@@ -42,12 +42,23 @@ func _refresh() -> void:
 		var energy_bar: String = _make_bar(npc.energy, "4080E8")
 		var social_bar: String = _make_bar(npc.social, "40C840")
 		var mood_val: float = npc.get_mood()
+		var mem_count: int = npc.memory.memories.size()
 
-		entry.text = "[b]%s[/b] (%s) → %s\nH:%s E:%s S:%s  Mood:%.0f  Obs:%d" % [
+		var text: String = "[b]%s[/b] (%s) → %s\nH:%s E:%s S:%s  Mood:%.0f  Mem:%d" % [
 			npc.npc_name, npc.job, npc._current_destination,
 			hunger_bar, energy_bar, social_bar,
-			mood_val, npc.observations.size()
+			mood_val, mem_count
 		]
+
+		# Show top 3 most recent memories (truncated)
+		var recent: Array[Dictionary] = npc.memory.get_recent(3)
+		for mem: Dictionary in recent:
+			var desc: String = mem.get("description", "")
+			if desc.length() > 40:
+				desc = desc.substr(0, 37) + "..."
+			text += "\n  [color=#888]%s[/color]" % desc
+
+		entry.text = text
 		_container.add_child(entry)
 
 
