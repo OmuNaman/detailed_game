@@ -16,6 +16,7 @@ func _ready() -> void:
 
 func _spawn_npcs(town_map: Node2D) -> void:
 	var building_positions: Dictionary = town_map.get_building_door_positions()
+	var building_interiors: Dictionary = town_map.get_building_interior_positions()
 
 	var file := FileAccess.open("res://data/npcs.json", FileAccess.READ)
 	if not file:
@@ -32,7 +33,7 @@ func _spawn_npcs(town_map: Node2D) -> void:
 
 	for npc_data: Dictionary in npc_data_list:
 		var npc: CharacterBody2D = NPC_SCENE.instantiate()
-		npc.initialize(npc_data, building_positions)
+		npc.initialize(npc_data, building_positions, building_interiors)
 
 		# Spawn at home door position
 		var home_name: String = npc_data.get("home", "")

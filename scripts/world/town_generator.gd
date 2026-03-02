@@ -1,8 +1,6 @@
 extends Node2D
 ## Generates the town using TileMapLayer with pixel art sprites.
-## Navigation is handled natively by TileMapLayer — walkable tiles have
-## NavigationPolygon data in the TileSet, and the GroundLayer auto-builds
-## the navmesh from those tiles.
+## Pathfinding uses AStarGrid2D directly on the tile grid — no NavigationServer needed.
 
 const TILE_SIZE: int = 32
 const MAP_WIDTH: int = 50
@@ -54,6 +52,9 @@ var _building_layer: TileMapLayer
 var _label_layer: Node2D
 var _tile_set: TileSet
 
+# AStarGrid2D for NPC pathfinding — replaces broken NavigationServer2D approach
+var _astar: AStarGrid2D
+
 
 func _ready() -> void:
 	_tile_set = _create_tileset()
@@ -61,13 +62,13 @@ func _ready() -> void:
 	_ground_layer = TileMapLayer.new()
 	_ground_layer.name = "GroundLayer"
 	_ground_layer.tile_set = _tile_set
-	_ground_layer.navigation_enabled = true  # TileMapLayer auto-builds navmesh
+	_ground_layer.navigation_enabled = false
 	add_child(_ground_layer)
 
 	_building_layer = TileMapLayer.new()
 	_building_layer.name = "BuildingLayer"
 	_building_layer.tile_set = _tile_set
-	_building_layer.navigation_enabled = false  # walls/roofs not navigable
+	_building_layer.navigation_enabled = false
 	add_child(_building_layer)
 
 	_label_layer = Node2D.new()
@@ -79,14 +80,14 @@ func _ready() -> void:
 	_place_buildings()
 	_place_water()
 	_render_map()
+	_build_astar()
 	_add_building_labels()
 	_add_map_boundary()
 
 
 func _create_tileset() -> TileSet:
 	## Builds a TileSet in code with one atlas source containing all tile sprites.
-	## Walkable tiles get NavigationPolygon (used by TileMapLayer to auto-build navmesh).
-	## Non-walkable tiles get physics collision.
+	## Non-walkable tiles get physics collision. No navigation layer needed (using AStarGrid2D).
 	var ts := TileSet.new()
 	ts.tile_size = Vector2i(TILE_SIZE, TILE_SIZE)
 
@@ -95,8 +96,7 @@ func _create_tileset() -> TileSet:
 	ts.set_physics_layer_collision_layer(0, 1)
 	ts.set_physics_layer_collision_mask(0, 0)
 
-	# Add navigation layer (index 0) for walkable tiles
-	ts.add_navigation_layer()
+	# No navigation layer — we use AStarGrid2D instead
 
 	# Atlas source: each tile is a separate 32x32 image loaded as a 1-column atlas
 	var source := TileSetAtlasSource.new()
@@ -126,8 +126,7 @@ func _create_tileset() -> TileSet:
 	var atlas_tex := ImageTexture.create_from_image(atlas_img)
 	source.texture = atlas_tex
 
-	# CRITICAL: add source to TileSet BEFORE creating tiles, so TileData
-	# knows about physics AND navigation layers
+	# Add source to TileSet BEFORE creating tiles
 	ts.add_source(source)
 
 	# Collision polygon points (relative to tile CENTER)
@@ -136,14 +135,6 @@ func _create_tileset() -> TileSet:
 		Vector2(-hs, -hs), Vector2(hs, -hs),
 		Vector2(hs, hs), Vector2(-hs, hs),
 	])
-
-	# Navigation polygon for walkable tiles (coordinates relative to tile center)
-	var walkable_nav_poly := NavigationPolygon.new()
-	walkable_nav_poly.vertices = PackedVector2Array([
-		Vector2(-hs, -hs), Vector2(hs, -hs),
-		Vector2(hs, hs), Vector2(-hs, hs),
-	])
-	walkable_nav_poly.add_polygon(PackedInt32Array([0, 1, 2, 3]))
 
 	# Create tile data for each tile
 	for i: int in range(tile_paths.size()):
@@ -157,9 +148,7 @@ func _create_tileset() -> TileSet:
 			i == Tile.FLOOR or i == Tile.DOOR
 		)
 
-		if is_walkable:
-			tile_data.set_navigation_polygon(0, walkable_nav_poly)
-		else:
+		if not is_walkable:
 			# Non-walkable: add physics collision so player can't walk through
 			tile_data.add_collision_polygon(0)
 			tile_data.set_collision_polygon_points(0, 0, collision_points)
@@ -296,6 +285,37 @@ func _render_map() -> void:
 				data.modulate = tint
 
 
+func _build_astar() -> void:
+	## Builds an AStarGrid2D from the logical tile map.
+	## Walkable: GRASS1, GRASS2, GRASS3, PATH, FLOOR, DOOR
+	## Solid: WALL_FRONT, WALL_SIDE, ROOF, WATER
+	_astar = AStarGrid2D.new()
+	_astar.region = Rect2i(0, 0, MAP_WIDTH, MAP_HEIGHT)
+	_astar.cell_size = Vector2(TILE_SIZE, TILE_SIZE)
+	_astar.offset = Vector2(TILE_SIZE / 2.0, TILE_SIZE / 2.0)  # center of tile
+	_astar.diagonal_mode = AStarGrid2D.DIAGONAL_MODE_NEVER
+	_astar.update()
+
+	# Mark non-walkable tiles as solid
+	for y: int in range(MAP_HEIGHT):
+		for x: int in range(MAP_WIDTH):
+			var tile_id: int = _map[y][x]
+			var is_walkable: bool = (
+				tile_id == Tile.GRASS1 or tile_id == Tile.GRASS2 or
+				tile_id == Tile.GRASS3 or tile_id == Tile.PATH or
+				tile_id == Tile.FLOOR or tile_id == Tile.DOOR
+			)
+			if not is_walkable:
+				_astar.set_point_solid(Vector2i(x, y), true)
+
+	print("[TownMap] AStarGrid2D built: %dx%d, walkable tiles marked" % [MAP_WIDTH, MAP_HEIGHT])
+
+
+func get_astar() -> AStarGrid2D:
+	## Returns the pathfinding grid for NPC navigation.
+	return _astar
+
+
 func _add_building_labels() -> void:
 	for bld: Dictionary in _buildings:
 		var gx: int = bld["gx"]
@@ -347,13 +367,43 @@ func get_building_door_positions() -> Dictionary:
 		var h: int = bld["h"]
 		# Door is at bottom center of building, centered in that tile
 		var door_x: int = gx + w / 2
-		var door_y: int = gy + h - 1
+		# One tile above the door = inside the building (FLOOR tile)
+		var door_y: int = gy + h - 2
 		var pos := Vector2(
 			door_x * TILE_SIZE + TILE_SIZE / 2.0,
 			door_y * TILE_SIZE + TILE_SIZE / 2.0
 		)
 		positions[bld["name"]] = pos
 	return positions
+
+
+func get_building_interior_positions() -> Dictionary:
+	## Returns {building_name: Array[Vector2]} — all walkable FLOOR tiles inside each building.
+	var interiors: Dictionary = {}
+	for bld: Dictionary in _buildings:
+		var gx: int = bld["gx"]
+		var gy: int = bld["gy"]
+		var w: int = bld["w"]
+		var h: int = bld["h"]
+		var tiles: Array[Vector2] = []
+		# Interior = everything inside walls (skip edges and bottom wall row)
+		for y: int in range(gy + 1, gy + h - 1):
+			for x: int in range(gx + 1, gx + w - 1):
+				var tile_id: int = _map[y][x]
+				if tile_id == Tile.FLOOR:
+					tiles.append(Vector2(
+						x * TILE_SIZE + TILE_SIZE / 2.0,
+						y * TILE_SIZE + TILE_SIZE / 2.0
+					))
+		# Also include the door tile as a valid spot
+		var door_x: int = gx + w / 2
+		var door_y: int = gy + h - 1
+		tiles.append(Vector2(
+			door_x * TILE_SIZE + TILE_SIZE / 2.0,
+			door_y * TILE_SIZE + TILE_SIZE / 2.0
+		))
+		interiors[bld["name"]] = tiles
+	return interiors
 
 
 func get_player_spawn_position() -> Vector2:

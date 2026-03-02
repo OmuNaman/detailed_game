@@ -12,6 +12,11 @@ const SEASON_NAMES: PackedStringArray = ["Spring", "Summer", "Autumn", "Winter"]
 # 1 real second = 1 game minute
 const REAL_SECONDS_PER_GAME_MINUTE: float = 1.0
 
+# Dev tool: time speed multiplier (cycle with F6)
+const TIME_SCALES: Array[float] = [1.0, 2.0, 5.0, 10.0, 30.0, 60.0]
+var _time_scale_index: int = 0
+var time_scale: float = 1.0
+
 var minute: int = 0
 var hour: int = 6  # Start at 6 AM
 var day: int = 1
@@ -28,11 +33,19 @@ func _ready() -> void:
 	total_minutes = hour * MINUTES_PER_HOUR + minute
 
 
+func _unhandled_input(event: InputEvent) -> void:
+	if event is InputEventKey and event.pressed and not event.echo:
+		if event.keycode == KEY_F6:
+			_time_scale_index = (_time_scale_index + 1) % TIME_SCALES.size()
+			time_scale = TIME_SCALES[_time_scale_index]
+			print("[GameClock] Speed: %.0fx" % time_scale)
+
+
 func _process(delta: float) -> void:
 	if is_paused:
 		return
 
-	_elapsed += delta
+	_elapsed += delta * time_scale
 	while _elapsed >= REAL_SECONDS_PER_GAME_MINUTE:
 		_elapsed -= REAL_SECONDS_PER_GAME_MINUTE
 		_advance_minute()

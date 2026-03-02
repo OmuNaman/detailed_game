@@ -1,7 +1,9 @@
 extends CharacterBody2D
-## Controls a single NPC: schedule-driven movement between buildings via navigation.
+## Controls a single NPC: schedule-driven movement between buildings.
+## Uses AStarGrid2D waypoint-following instead of NavigationAgent2D.
 
 const SPEED: float = 80.0
+const TILE_SIZE: int = 32
 
 var npc_name: String = ""
 var job: String = ""
@@ -10,25 +12,28 @@ var workplace_building: String = ""
 var sprite_path: String = ""
 
 var _current_destination: String = ""
-var _is_navigating: bool = false
 var _building_positions: Dictionary = {}
-var _nav_retry_timer: float = 0.0
-var _nav_ready: bool = false
+var _building_interiors: Dictionary = {}
+
+# A* waypoint following
+var _path: PackedVector2Array = PackedVector2Array()
+var _path_index: int = 0
+var _is_moving: bool = false
+var _astar: AStarGrid2D = null
 
 @onready var sprite: Sprite2D = $Sprite2D
-@onready var nav_agent: NavigationAgent2D = $NavigationAgent2D
 @onready var name_label: Label = $NameLabel
 
 
-func initialize(data: Dictionary, building_positions: Dictionary) -> void:
+func initialize(data: Dictionary, building_positions: Dictionary, building_interiors: Dictionary = {}) -> void:
 	## Call BEFORE adding to scene tree. Sets NPC identity and building targets.
 	npc_name = data.get("name", "NPC")
 	job = data.get("job", "")
 	home_building = data.get("home", "")
 	workplace_building = data.get("workplace", "")
 	sprite_path = data.get("sprite", "")
-
 	_building_positions = building_positions
+	_building_interiors = building_interiors
 
 
 func _ready() -> void:
@@ -38,49 +43,43 @@ func _ready() -> void:
 			sprite.texture = tex
 	name_label.text = npc_name
 
-	nav_agent.path_desired_distance = 8.0
-	nav_agent.target_desired_distance = 16.0
-	nav_agent.navigation_finished.connect(_on_navigation_finished)
-
 	EventBus.time_hour_changed.connect(_on_hour_changed)
 
-	# TileMapLayer builds its navmesh asynchronously after entering the tree.
-	# Wait several physics frames to ensure NavigationServer has fully synced.
-	_wait_for_navigation()
+	# Wait one frame for the scene tree to be fully built, then grab the A* grid
+	await get_tree().process_frame
+	var town_map: Node2D = get_parent().get_node_or_null("TownMap")
+	if town_map and town_map.has_method("get_astar"):
+		_astar = town_map.get_astar()
+		print("[%s] Got AStarGrid2D reference" % npc_name)
+	else:
+		push_error("[%s] Could not find TownMap or get_astar()!" % npc_name)
+		return
 
-
-func _wait_for_navigation() -> void:
-	for i: int in range(10):
-		await get_tree().physics_frame
-
-	_nav_ready = true
-	print("[%s] Navigation ready. Current hour: %d" % [npc_name, GameClock.hour])
+	# Initial destination based on current hour
 	_update_destination(GameClock.hour)
 
 
-func _physics_process(delta: float) -> void:
-	if not _nav_ready:
+func _physics_process(_delta: float) -> void:
+	if not _is_moving or _path.is_empty():
 		return
 
-	# Retry navigation if path wasn't found on first attempt
-	if _nav_retry_timer > 0.0:
-		_nav_retry_timer -= delta
-		if _nav_retry_timer <= 0.0:
-			print("[%s] Retrying navigation to '%s'" % [npc_name, _current_destination])
-			_current_destination = ""  # force re-evaluation
-			_update_destination(GameClock.hour)
-		return
+	var target: Vector2 = _path[_path_index]
+	var distance: float = global_position.distance_to(target)
 
-	if not _is_navigating:
-		return
+	if distance < 4.0:
+		# Reached this waypoint, advance to next
+		_path_index += 1
+		if _path_index >= _path.size():
+			# Reached final destination
+			_is_moving = false
+			_path = PackedVector2Array()
+			velocity = Vector2.ZERO
+			print("[%s] Arrived at '%s'" % [npc_name, _current_destination])
+			return
+		target = _path[_path_index]
 
-	if nav_agent.is_navigation_finished():
-		_is_navigating = false
-		velocity = Vector2.ZERO
-		return
-
-	var next_pos: Vector2 = nav_agent.get_next_path_position()
-	var direction: Vector2 = global_position.direction_to(next_pos)
+	# Move toward current waypoint
+	var direction: Vector2 = global_position.direction_to(target)
 	velocity = direction * SPEED
 	move_and_slide()
 
@@ -91,41 +90,60 @@ func _physics_process(delta: float) -> void:
 		sprite.flip_h = false
 
 
-func _on_navigation_finished() -> void:
-	_is_navigating = false
-	velocity = Vector2.ZERO
-	print("[%s] Arrived at '%s'" % [npc_name, _current_destination])
-
-
 func _on_hour_changed(hour: int) -> void:
-	if _nav_ready:
-		_update_destination(hour)
+	_update_destination(hour)
 
 
 func _update_destination(hour: int) -> void:
+	if _astar == null:
+		return
+
 	var dest: String = _get_schedule_destination(hour)
 	if dest == _current_destination:
 		return
 
 	_current_destination = dest
-	var target: Vector2 = _building_positions.get(dest, Vector2.ZERO)
-	if target == Vector2.ZERO:
-		push_warning("%s: no position found for building '%s'" % [npc_name, dest])
+
+	# Pick a random interior tile if available, otherwise use door position
+	var target_pos: Vector2 = Vector2.ZERO
+	if _building_interiors.has(dest) and _building_interiors[dest].size() > 0:
+		var tiles: Array = _building_interiors[dest]
+		target_pos = tiles[randi() % tiles.size()]
+	else:
+		target_pos = _building_positions.get(dest, Vector2.ZERO)
+
+	if target_pos == Vector2.ZERO:
+		push_warning("[%s] No position for building '%s'" % [npc_name, dest])
 		return
 
-	print("[%s] Hour %d -> heading to '%s' at %s (from %s)" % [
-		npc_name, hour, dest, target, global_position])
+	# Convert pixel positions to grid coordinates
+	var from_grid := Vector2i(
+		int(global_position.x) / TILE_SIZE,
+		int(global_position.y) / TILE_SIZE
+	)
+	var to_grid := Vector2i(
+		int(target_pos.x) / TILE_SIZE,
+		int(target_pos.y) / TILE_SIZE
+	)
 
-	nav_agent.target_position = target
-	_is_navigating = true
+	# Clamp to grid bounds
+	from_grid.x = clampi(from_grid.x, 0, 49)
+	from_grid.y = clampi(from_grid.y, 0, 39)
+	to_grid.x = clampi(to_grid.x, 0, 49)
+	to_grid.y = clampi(to_grid.y, 0, 39)
 
-	# Check if navigation actually started after a couple frames
-	await get_tree().physics_frame
-	await get_tree().physics_frame
-	if nav_agent.is_navigation_finished() and global_position.distance_to(target) > nav_agent.target_desired_distance:
-		push_warning("[%s] Navigation failed to '%s' — will retry in 2s" % [npc_name, dest])
-		_is_navigating = false
-		_nav_retry_timer = 2.0
+	# Get path from A*
+	_path = _astar.get_point_path(from_grid, to_grid)
+
+	if _path.is_empty():
+		push_warning("[%s] A* found no path from %s to %s (dest: '%s')" % [
+			npc_name, from_grid, to_grid, dest])
+		return
+
+	_path_index = 0
+	_is_moving = true
+	print("[%s] Hour %d -> '%s' | Path: %d waypoints | From %s -> %s" % [
+		npc_name, hour, dest, _path.size(), from_grid, to_grid])
 
 
 func _get_schedule_destination(hour: int) -> String:
