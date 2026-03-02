@@ -69,6 +69,32 @@ DIRT_BASE    = (170, 145, 100)
 DIRT_DARK    = (145, 120, 78)
 DIRT_LIGHT   = (190, 168, 125)
 
+# Furniture
+BLANKET_RED   = (180, 60, 60)
+BLANKET_DARK  = (140, 45, 45)
+PILLOW        = (220, 210, 190)
+TABLE_TOP     = (160, 120, 60)
+TABLE_DARK    = (120, 85, 40)
+COUNTER_TOP   = (170, 140, 80)
+COUNTER_DARK  = (130, 100, 55)
+BRICK         = (160, 80, 60)
+BRICK_DARK    = (120, 55, 40)
+FIRE_ORANGE   = (240, 160, 40)
+FIRE_YELLOW   = (250, 220, 80)
+METAL_DARK    = (60, 55, 50)
+METAL_MID     = (90, 85, 80)
+METAL_LIGHT   = (130, 125, 120)
+PEW_WOOD      = (150, 115, 60)
+PEW_DARK      = (120, 88, 42)
+ALTAR_WHITE   = (220, 215, 200)
+ALTAR_GOLD    = (200, 180, 60)
+BARREL_STAVE  = (130, 90, 40)
+BARREL_BAND   = (80, 70, 60)
+SHELF_BACK    = (110, 80, 50)
+BOOK_RED      = (180, 50, 50)
+BOOK_BLUE     = (50, 80, 160)
+BOOK_GREEN    = (50, 130, 60)
+
 # Common
 BLACK       = (40, 40, 40)
 WHITE       = (245, 245, 240)
@@ -287,6 +313,179 @@ def gen_dirt_path():
     d.point((1, 24), fill=GRASS)
     d.point((30, 4), fill=GRASS)
     save(img, "tiles", "dirt_path.png")
+
+
+# ============================================================
+# FURNITURE TILES
+# ============================================================
+
+def gen_bed():
+    """Top-down bed: pillow at top, red blanket."""
+    img, d = new()
+    d.rectangle([2, 2, 29, 29], fill=WOOD_DARK)
+    d.rectangle([3, 3, 28, 28], fill=WOOD)
+    d.rectangle([5, 3, 26, 10], fill=PILLOW)
+    d.rectangle([6, 4, 25, 9], fill=(235, 230, 215))
+    d.rectangle([4, 11, 27, 27], fill=BLANKET_RED)
+    d.rectangle([5, 12, 26, 26], fill=BLANKET_DARK)
+    d.line([(5, 14), (26, 14)], fill=BLANKET_RED)
+    d.line([(5, 20), (26, 20)], fill=BLANKET_RED)
+    save(img, "tiles", "bed.png")
+
+
+def gen_table():
+    """Top-down small wooden table."""
+    img, d = new()
+    d.rectangle([4, 6, 27, 25], fill=TABLE_TOP)
+    d.rectangle([5, 7, 26, 24], fill=(175, 135, 70))
+    d.line([(4, 25), (27, 25)], fill=TABLE_DARK)
+    d.line([(27, 6), (27, 25)], fill=TABLE_DARK)
+    d.line([(8, 8), (8, 23)], fill=TABLE_DARK)
+    d.line([(15, 8), (15, 23)], fill=TABLE_DARK)
+    d.line([(22, 8), (22, 23)], fill=TABLE_DARK)
+    for x, y in [(5, 7), (25, 7), (5, 23), (25, 23)]:
+        d.rectangle([x-1, y-1, x+1, y+1], fill=WOOD_DARK)
+    save(img, "tiles", "table.png")
+
+
+def gen_counter():
+    """Shop counter with items on top."""
+    img, d = new()
+    d.rectangle([2, 8, 29, 24], fill=COUNTER_TOP)
+    d.rectangle([3, 9, 28, 23], fill=(180, 155, 95))
+    d.line([(2, 24), (29, 24)], fill=COUNTER_DARK)
+    d.rectangle([2, 24, 29, 29], fill=COUNTER_DARK)
+    d.rectangle([3, 25, 28, 28], fill=(145, 110, 65))
+    d.rectangle([6, 10, 10, 14], fill=BLANKET_RED)
+    d.rectangle([14, 11, 17, 14], fill=ALTAR_GOLD)
+    d.rectangle([21, 10, 25, 14], fill=BOOK_BLUE)
+    save(img, "tiles", "counter.png")
+
+
+def gen_oven():
+    """Brick oven with orange fire glow."""
+    img, d = new()
+    d.rectangle([2, 2, 29, 29], fill=BRICK)
+    d.rectangle([3, 3, 28, 28], fill=BRICK_DARK)
+    for row in range(4):
+        y = 4 + row * 7
+        offset = 0 if row % 2 == 0 else 7
+        for sx in range(offset, 28, 14):
+            d.line([(sx, y), (sx, y + 5)], fill=BRICK)
+        d.line([(3, y + 6), (28, y + 6)], fill=BRICK)
+    d.rectangle([10, 16, 21, 26], fill=(40, 30, 25))
+    d.rectangle([12, 20, 19, 25], fill=FIRE_ORANGE)
+    d.rectangle([13, 22, 18, 24], fill=FIRE_YELLOW)
+    d.point((15, 19), fill=FIRE_YELLOW)
+    d.point((16, 18), fill=FIRE_ORANGE)
+    d.rectangle([12, 2, 19, 5], fill=BRICK_DARK)
+    save(img, "tiles", "oven.png")
+
+
+def gen_anvil():
+    """Blacksmith anvil on wooden stump."""
+    img, d = new()
+    d.rectangle([8, 18, 23, 29], fill=WOOD_DARK)
+    d.rectangle([9, 19, 22, 28], fill=WOOD)
+    d.rectangle([6, 8, 25, 20], fill=METAL_MID)
+    d.rectangle([2, 11, 6, 17], fill=METAL_MID)
+    d.rectangle([0, 12, 2, 16], fill=METAL_DARK)
+    d.rectangle([25, 10, 30, 18], fill=METAL_MID)
+    d.rectangle([7, 9, 24, 12], fill=METAL_LIGHT)
+    d.line([(6, 20), (25, 20)], fill=METAL_DARK)
+    d.line([(25, 8), (25, 20)], fill=METAL_DARK)
+    d.rectangle([12, 5, 14, 9], fill=WOOD)
+    d.rectangle([10, 3, 16, 6], fill=METAL_DARK)
+    save(img, "tiles", "anvil.png")
+
+
+def gen_pew():
+    """Church pew — wooden bench from above."""
+    img, d = new()
+    d.rectangle([3, 8, 28, 18], fill=PEW_WOOD)
+    d.rectangle([4, 9, 27, 17], fill=(160, 125, 68))
+    d.rectangle([3, 4, 28, 8], fill=PEW_DARK)
+    d.rectangle([4, 5, 27, 7], fill=PEW_WOOD)
+    d.line([(3, 18), (28, 18)], fill=PEW_DARK)
+    d.line([(10, 9), (10, 17)], fill=PEW_DARK)
+    d.line([(20, 9), (20, 17)], fill=PEW_DARK)
+    d.rectangle([2, 5, 4, 18], fill=PEW_DARK)
+    d.rectangle([27, 5, 29, 18], fill=PEW_DARK)
+    save(img, "tiles", "pew.png")
+
+
+def gen_altar():
+    """Church altar — white marble with gold cross and candles."""
+    img, d = new()
+    d.rectangle([3, 4, 28, 28], fill=ALTAR_WHITE)
+    d.rectangle([4, 5, 27, 27], fill=(230, 225, 210))
+    d.line([(3, 28), (28, 28)], fill=(180, 175, 160))
+    d.line([(28, 4), (28, 28)], fill=(180, 175, 160))
+    d.rectangle([5, 20, 26, 27], fill=(180, 160, 200))
+    d.line([(5, 20), (26, 20)], fill=(150, 130, 170))
+    d.rectangle([14, 6, 17, 18], fill=ALTAR_GOLD)
+    d.rectangle([10, 9, 21, 12], fill=ALTAR_GOLD)
+    d.rectangle([15, 7, 16, 17], fill=(220, 200, 80))
+    d.rectangle([6, 6, 8, 10], fill=PILLOW)
+    d.point((7, 5), fill=FIRE_YELLOW)
+    d.rectangle([23, 6, 25, 10], fill=PILLOW)
+    d.point((24, 5), fill=FIRE_YELLOW)
+    save(img, "tiles", "altar.png")
+
+
+def gen_barrel():
+    """Wooden barrel — circular with metal bands."""
+    img, d = new()
+    d.ellipse([4, 4, 27, 27], fill=BARREL_STAVE)
+    d.ellipse([5, 5, 26, 26], fill=(145, 105, 50))
+    d.ellipse([6, 6, 25, 25], outline=BARREL_BAND)
+    d.ellipse([9, 9, 22, 22], outline=BARREL_BAND)
+    d.line([(15, 5), (15, 26)], fill=BARREL_STAVE)
+    d.line([(5, 15), (26, 15)], fill=BARREL_STAVE)
+    d.rectangle([13, 13, 18, 18], fill=WOOD_DARK)
+    d.rectangle([14, 14, 17, 17], fill=BARREL_STAVE)
+    save(img, "tiles", "barrel.png")
+
+
+def gen_shelf():
+    """Wall shelf with books and goods."""
+    img, d = new()
+    d.rectangle([2, 2, 29, 29], fill=SHELF_BACK)
+    d.rectangle([3, 3, 28, 28], fill=(125, 92, 58))
+    for sy in [3, 10, 17, 24]:
+        d.rectangle([2, sy, 29, sy + 1], fill=WOOD_DARK)
+    d.rectangle([5, 4, 8, 9], fill=BOOK_RED)
+    d.rectangle([9, 5, 12, 9], fill=BOOK_BLUE)
+    d.rectangle([13, 4, 16, 9], fill=BOOK_GREEN)
+    d.rectangle([18, 5, 20, 9], fill=BOOK_RED)
+    d.rectangle([5, 11, 9, 16], fill=PILLOW)
+    d.rectangle([12, 12, 17, 16], fill=BARREL_STAVE)
+    d.rectangle([20, 11, 24, 16], fill=PILLOW)
+    d.rectangle([4, 18, 10, 23], fill=COUNTER_TOP)
+    d.rectangle([13, 19, 18, 23], fill=BLANKET_RED)
+    d.rectangle([21, 18, 27, 23], fill=WOOD)
+    save(img, "tiles", "shelf.png")
+
+
+def gen_desk():
+    """Work desk with papers, inkwell, book."""
+    img, d = new()
+    d.rectangle([3, 5, 28, 26], fill=WOOD_DARK)
+    d.rectangle([4, 6, 27, 25], fill=(120, 88, 48))
+    d.line([(3, 26), (28, 26)], fill=(80, 55, 30))
+    d.line([(28, 5), (28, 26)], fill=(80, 55, 30))
+    d.rectangle([6, 8, 15, 16], fill=PILLOW)
+    d.rectangle([7, 9, 14, 15], fill=(235, 230, 215))
+    for ly in [10, 11, 12, 13, 14]:
+        d.line([(8, ly), (13, ly)], fill=(180, 175, 170))
+    d.rectangle([18, 8, 21, 11], fill=BLACK)
+    d.rectangle([19, 9, 20, 10], fill=(30, 30, 60))
+    d.line([(21, 7), (25, 11)], fill=PILLOW)
+    d.point((21, 7), fill=(200, 180, 140))
+    d.rectangle([17, 14, 25, 22], fill=BOOK_RED)
+    d.rectangle([18, 15, 24, 21], fill=(160, 40, 40))
+    d.line([(20, 14), (20, 22)], fill=(140, 30, 30))
+    save(img, "tiles", "desk.png")
 
 
 # ============================================================
@@ -509,6 +708,19 @@ def main():
     gen_cobblestone()
     gen_dirt_path()
 
+    # Furniture
+    print("\n[Furniture]")
+    gen_bed()
+    gen_table()
+    gen_counter()
+    gen_oven()
+    gen_anvil()
+    gen_pew()
+    gen_altar()
+    gen_barrel()
+    gen_shelf()
+    gen_desk()
+
     # Characters
     print("\n[Characters]")
     gen_player()
@@ -524,7 +736,7 @@ def main():
     gen_bram()
     gen_lyra()
 
-    print(f"\nDone! 24 sprites generated.")
+    print(f"\nDone! 34 sprites generated.")
 
 
 if __name__ == "__main__":

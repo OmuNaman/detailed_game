@@ -8,7 +8,9 @@ const MAP_HEIGHT: int = 45
 
 # Tile IDs (used in the _map array and as TileSet atlas coords)
 enum Tile { GRASS1, PATH, WATER, WALL_FRONT, FLOOR, ROOF, DOOR, GRASS2, GRASS3, WALL_SIDE,
-	COBBLESTONE, DIRT_PATH }
+	COBBLESTONE, DIRT_PATH,
+	# --- Furniture ---
+	BED, TABLE, COUNTER, OVEN, ANVIL, PEW, ALTAR, BARREL, SHELF, DESK }
 # Atlas layout: each tile gets column = Tile enum value, row = 0
 
 # Grass variant weights for visual variety
@@ -89,6 +91,7 @@ func _ready() -> void:
 	_init_map()
 	_carve_paths()
 	_place_buildings()
+	_place_furniture()
 	_place_water()
 	_render_map()
 	_build_astar()
@@ -126,6 +129,17 @@ func _create_tileset() -> TileSet:
 		"res://assets/sprites/tiles/wall_side.png",   # 9 = WALL_SIDE
 		"res://assets/sprites/tiles/cobblestone.png", # 10 = COBBLESTONE
 		"res://assets/sprites/tiles/dirt_path.png",   # 11 = DIRT_PATH
+		# --- Furniture ---
+		"res://assets/sprites/tiles/bed.png",         # 12 = BED
+		"res://assets/sprites/tiles/table.png",       # 13 = TABLE
+		"res://assets/sprites/tiles/counter.png",     # 14 = COUNTER
+		"res://assets/sprites/tiles/oven.png",        # 15 = OVEN
+		"res://assets/sprites/tiles/anvil.png",       # 16 = ANVIL
+		"res://assets/sprites/tiles/pew.png",         # 17 = PEW
+		"res://assets/sprites/tiles/altar.png",       # 18 = ALTAR
+		"res://assets/sprites/tiles/barrel.png",      # 19 = BARREL
+		"res://assets/sprites/tiles/shelf.png",       # 20 = SHELF
+		"res://assets/sprites/tiles/desk.png",        # 21 = DESK
 	]
 
 	# Build a horizontal atlas image (N tiles wide, 1 tile tall)
@@ -250,6 +264,75 @@ func _place_buildings() -> void:
 		_set_tile(door_x, gy + h - 1, Tile.DOOR)
 
 
+func _place_furniture() -> void:
+	## Coordinates are interior offsets from (gx+1, gy+1).
+	## Each entry: [dx, dy, TileType]
+
+	var layouts: Dictionary = {
+		"Church": [
+			# 5×6 interior → 11 furniture, 19 walkable
+			[1, 0, Tile.ALTAR], [2, 0, Tile.ALTAR], [3, 0, Tile.ALTAR],
+			[0, 2, Tile.PEW], [1, 2, Tile.PEW], [3, 2, Tile.PEW], [4, 2, Tile.PEW],
+			[0, 4, Tile.PEW], [1, 4, Tile.PEW], [3, 4, Tile.PEW], [4, 4, Tile.PEW],
+		],
+		"Tavern": [
+			# 6×4 interior → 8 furniture, 16 walkable
+			[1, 0, Tile.COUNTER], [2, 0, Tile.COUNTER],
+			[3, 0, Tile.COUNTER], [4, 0, Tile.COUNTER],
+			[0, 0, Tile.BARREL], [5, 0, Tile.BARREL],
+			[0, 2, Tile.TABLE], [5, 2, Tile.TABLE],
+		],
+		"Bakery": [
+			# 4×3 interior → 3 furniture, 9 walkable
+			[0, 0, Tile.OVEN],
+			[0, 2, Tile.COUNTER], [1, 2, Tile.COUNTER],
+		],
+		"Blacksmith": [
+			# 4×3 interior → 3 furniture, 9 walkable
+			[0, 0, Tile.SHELF], [1, 0, Tile.ANVIL], [3, 0, Tile.BARREL],
+		],
+		"General Store": [
+			# 5×3 interior → 5 furniture, 10 walkable
+			[0, 0, Tile.SHELF], [1, 0, Tile.SHELF], [2, 0, Tile.SHELF],
+			[0, 2, Tile.COUNTER], [1, 2, Tile.COUNTER],
+		],
+		"Sheriff Office": [
+			# 4×3 interior → 3 furniture, 9 walkable
+			[0, 0, Tile.DESK], [1, 0, Tile.DESK], [3, 0, Tile.SHELF],
+		],
+		"Courthouse": [
+			# 6×3 interior → 6 furniture, 12 walkable
+			[0, 0, Tile.DESK], [2, 0, Tile.DESK], [3, 0, Tile.DESK],
+			[1, 2, Tile.PEW], [2, 2, Tile.PEW], [4, 2, Tile.PEW],
+		],
+	}
+
+	# Houses: 4×3 interior = 12 tiles → 3 furniture, 9 walkable
+	var house_layout: Array = [
+		[0, 0, Tile.BED], [1, 0, Tile.SHELF], [1, 2, Tile.TABLE],
+	]
+
+	for bld: Dictionary in _buildings:
+		var bld_name: String = bld["name"]
+		var interior_x: int = bld["gx"] + 1
+		var interior_y: int = bld["gy"] + 1
+
+		var layout: Array = []
+		if layouts.has(bld_name):
+			layout = layouts[bld_name]
+		elif bld_name.begins_with("House"):
+			layout = house_layout
+
+		for item: Array in layout:
+			_set_tile(interior_x + item[0], interior_y + item[1], item[2])
+
+	# Debug: verify walkable counts
+	if OS.is_debug_build():
+		var counts: Dictionary = get_building_interior_positions()
+		for bld_name: String in counts:
+			print("[Furniture] %s: %d walkable tiles" % [bld_name, counts[bld_name].size()])
+
+
 func _place_water() -> void:
 	for y: int in range(36, 42):
 		for x: int in range(46, 55):
@@ -282,6 +365,10 @@ func _render_map() -> void:
 
 			# Roofs and walls go on building layer (renders above ground)
 			if tile_id == Tile.ROOF or tile_id == Tile.WALL_FRONT or tile_id == Tile.WALL_SIDE:
+				_building_layer.set_cell(coord, 0, atlas_coord)
+			elif tile_id >= Tile.BED:
+				# Furniture: floor underneath + furniture sprite on top
+				_ground_layer.set_cell(coord, 0, Vector2i(Tile.FLOOR, 0))
 				_building_layer.set_cell(coord, 0, atlas_coord)
 			else:
 				_ground_layer.set_cell(coord, 0, atlas_coord)
