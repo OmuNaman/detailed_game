@@ -1,7 +1,7 @@
 extends Node2D
 ## Generates the town using TileMapLayer with pixel art sprites.
-## Walkable tiles (grass, path, floor, door) have navigation polygons in the
-## TileSet, so the NavigationRegion is built automatically — no manual outlines.
+## Navigation is handled by a single NavigationRegion2D with shared-vertex quads
+## for each walkable tile, ensuring full connectivity through doors.
 
 const TILE_SIZE: int = 32
 const MAP_WIDTH: int = 50
@@ -60,12 +60,13 @@ func _ready() -> void:
 	_ground_layer = TileMapLayer.new()
 	_ground_layer.name = "GroundLayer"
 	_ground_layer.tile_set = _tile_set
+	_ground_layer.navigation_enabled = false  # we use our own NavigationRegion2D
 	add_child(_ground_layer)
 
 	_building_layer = TileMapLayer.new()
 	_building_layer.name = "BuildingLayer"
 	_building_layer.tile_set = _tile_set
-	_building_layer.navigation_enabled = false  # only ground layer provides nav
+	_building_layer.navigation_enabled = false
 	add_child(_building_layer)
 
 	_label_layer = Node2D.new()
@@ -77,18 +78,17 @@ func _ready() -> void:
 	_place_buildings()
 	_place_water()
 	_render_map()
+	_build_navigation()
 	_add_building_labels()
 	_add_map_boundary()
 
 
 func _create_tileset() -> TileSet:
 	## Builds a TileSet in code with one atlas source containing all tile sprites.
-	## Walkable tiles get a navigation polygon; non-walkable get a physics collision.
+	## Non-walkable tiles get physics collision. Navigation is handled separately
+	## by _build_navigation() using a NavigationRegion2D.
 	var ts := TileSet.new()
 	ts.tile_size = Vector2i(TILE_SIZE, TILE_SIZE)
-
-	# Add navigation layer (index 0)
-	ts.add_navigation_layer()
 
 	# Add physics layer (index 0) for wall/roof/water collision
 	ts.add_physics_layer()
@@ -124,19 +124,11 @@ func _create_tileset() -> TileSet:
 	source.texture = atlas_tex
 
 	# CRITICAL: add source to TileSet BEFORE creating tiles, so TileData
-	# knows about physics/navigation layers (fixes "out of bounds" errors)
+	# knows about physics layers (fixes "out of bounds" errors)
 	ts.add_source(source)
 
-	# Full navigation polygon (covers entire tile — coordinates from tile center)
+	# Collision polygon points (relative to tile CENTER)
 	var hs: float = TILE_SIZE / 2.0
-	var nav_poly := NavigationPolygon.new()
-	nav_poly.vertices = PackedVector2Array([
-		Vector2(0, 0), Vector2(TILE_SIZE, 0),
-		Vector2(TILE_SIZE, TILE_SIZE), Vector2(0, TILE_SIZE),
-	])
-	nav_poly.add_polygon(PackedInt32Array([0, 1, 2, 3]))
-
-	# Collision polygon points (relative to tile CENTER, not top-left)
 	var collision_points := PackedVector2Array([
 		Vector2(-hs, -hs), Vector2(hs, -hs),
 		Vector2(hs, hs), Vector2(-hs, hs),
@@ -154,9 +146,7 @@ func _create_tileset() -> TileSet:
 			i == Tile.FLOOR or i == Tile.DOOR
 		)
 
-		if is_walkable:
-			tile_data.set_navigation_polygon(0, nav_poly)
-		else:
+		if not is_walkable:
 			# Non-walkable: add physics collision so player can't walk through
 			tile_data.add_collision_polygon(0)
 			tile_data.set_collision_polygon_points(0, 0, collision_points)
@@ -291,6 +281,39 @@ func _render_map() -> void:
 			var data: TileData = _building_layer.get_cell_tile_data(Vector2i(x, gy))
 			if data:
 				data.modulate = tint
+
+
+func _build_navigation() -> void:
+	## Creates a single NavigationRegion2D covering all walkable tiles.
+	## Each walkable tile becomes a quad polygon. Adjacent tiles share corner
+	## vertices, so NavigationServer2D automatically connects them within the
+	## same region — no edge-matching margin needed.
+	var nav_poly := NavigationPolygon.new()
+
+	# Vertex grid: one vertex per tile corner = (MAP_WIDTH+1) * (MAP_HEIGHT+1)
+	var cols: int = MAP_WIDTH + 1
+	var verts := PackedVector2Array()
+	verts.resize(cols * (MAP_HEIGHT + 1))
+	for y: int in range(MAP_HEIGHT + 1):
+		for x: int in range(cols):
+			verts[y * cols + x] = Vector2(x * TILE_SIZE, y * TILE_SIZE)
+	nav_poly.vertices = verts
+
+	# Add a quad for each walkable tile using shared corner vertices
+	for y: int in range(MAP_HEIGHT):
+		for x: int in range(MAP_WIDTH):
+			var tile_id: int = _map[y][x]
+			if tile_id == Tile.GRASS1 or tile_id == Tile.PATH or tile_id == Tile.FLOOR or tile_id == Tile.DOOR:
+				var tl: int = y * cols + x
+				var tr: int = tl + 1
+				var bl: int = (y + 1) * cols + x
+				var br: int = bl + 1
+				nav_poly.add_polygon(PackedInt32Array([tl, tr, br, bl]))
+
+	var nav_region := NavigationRegion2D.new()
+	nav_region.name = "NavRegion"
+	nav_region.navigation_polygon = nav_poly
+	add_child(nav_region)
 
 
 func _add_building_labels() -> void:

@@ -12,6 +12,7 @@ var sprite_path: String = ""
 var _current_destination: String = ""
 var _is_navigating: bool = false
 var _building_positions: Dictionary = {}
+var _nav_retry_timer: float = 0.0
 
 @onready var sprite: Sprite2D = $Sprite2D
 @onready var nav_agent: NavigationAgent2D = $NavigationAgent2D
@@ -42,12 +43,21 @@ func _ready() -> void:
 
 	EventBus.time_hour_changed.connect(_on_hour_changed)
 
-	# Navigation map needs a physics frame to synchronize
-	await get_tree().physics_frame
+	# NavigationServer needs multiple frames to build navmesh from TileMapLayer
+	for i: int in range(3):
+		await get_tree().physics_frame
 	_update_destination(GameClock.hour)
 
 
-func _physics_process(_delta: float) -> void:
+func _physics_process(delta: float) -> void:
+	# Retry navigation if path wasn't found on first attempt
+	if _nav_retry_timer > 0.0:
+		_nav_retry_timer -= delta
+		if _nav_retry_timer <= 0.0:
+			_current_destination = ""  # force re-evaluation
+			_update_destination(GameClock.hour)
+		return
+
 	if not _is_navigating:
 		return
 
@@ -90,6 +100,13 @@ func _update_destination(hour: int) -> void:
 
 	nav_agent.target_position = target
 	_is_navigating = true
+
+	# If nav agent can't find a path, retry in 2 seconds
+	await get_tree().physics_frame
+	await get_tree().physics_frame
+	if nav_agent.is_navigation_finished() and global_position.distance_to(target) > nav_agent.target_desired_distance:
+		_is_navigating = false
+		_nav_retry_timer = 2.0
 
 
 func _get_schedule_destination(hour: int) -> String:
