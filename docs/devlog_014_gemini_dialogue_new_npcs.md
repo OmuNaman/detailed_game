@@ -291,3 +291,31 @@ Bottom of overlay: Gemini API cost tracker showing total calls and estimated cos
 - [ ] Reputation tracking
 
 **Progress: 14/19 (74%)**
+
+---
+
+## Addendum: Gemini 2.5 Flash Migration
+
+### Problem
+After updating the API key, `gemini-2.0-flash` returned 404 — Google retired the model for new API keys. Switched to `gemini-2.5-flash`.
+
+### Thinking Token Issue
+Gemini 2.5 Flash has a built-in "thinking" mode that consumes internal reasoning tokens before producing output. With the original `maxOutputTokens: 150`, the model spent ~143 tokens on thinking, leaving only 3-7 tokens for the actual NPC dialogue — responses were cut off mid-sentence ("Well hello there" → stop).
+
+### Fix
+Disabled thinking and raised the output cap:
+```gdscript
+"generationConfig": {
+    "maxOutputTokens": 256,
+    "temperature": 0.8,
+    "thinkingConfig": {"thinkingBudget": 0}
+}
+```
+
+### Result
+| Config | Thinking Tokens | Output Tokens | Total | Response Quality |
+|--------|----------------|---------------|-------|-----------------|
+| Before (150, thinking on) | ~143 | 3-7 | ~246 | Truncated, unusable |
+| After (256, thinking off) | 0 | ~38 | ~124 | Full 1-3 sentences, great personality |
+
+For short NPC dialogue (1-3 sentences), thinking adds no value — just cost and latency. ~3.4x cheaper per request.

@@ -1,8 +1,8 @@
 extends Node
-## Calls Gemini 2.0 Flash for NPC dialogue generation.
+## Calls Gemini 2.5 Flash for NPC dialogue generation.
 ## Falls back gracefully if API unavailable. Serializes requests via queue.
 
-const MODEL: String = "gemini-2.0-flash"
+const MODEL: String = "gemini-2.5-flash"
 const API_URL: String = "https://generativelanguage.googleapis.com/v1beta/models/"
 
 var _api_key: String = ""
@@ -57,7 +57,7 @@ func _process_queue() -> void:
 	var body: Dictionary = {
 		"contents": [{"parts": [{"text": req["message"]}]}],
 		"systemInstruction": {"parts": [{"text": req["system"]}]},
-		"generationConfig": {"maxOutputTokens": 150, "temperature": 0.8}
+		"generationConfig": {"maxOutputTokens": 256, "temperature": 0.8, "thinkingConfig": {"thinkingBudget": 0}}
 	}
 	var json_body: String = JSON.stringify(body)
 	var headers: PackedStringArray = ["Content-Type: application/json"]
