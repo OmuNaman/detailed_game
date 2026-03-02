@@ -208,8 +208,8 @@ func get_dialogue_response_async(callback: Callable) -> void:
 		if success and text != "":
 			# Store this conversation as a memory
 			_add_memory_with_embedding(
-				"Talked with Player at the %s. I said: %s" % [_current_destination, text.left(80)],
-				"dialogue", "Player", [npc_name, "Player"] as Array[String],
+				"Talked with %s at the %s. I said: %s" % [PlayerProfile.player_name, _current_destination, text.left(80)],
+				"dialogue", PlayerProfile.player_name, [npc_name, PlayerProfile.player_name] as Array[String],
 				_current_destination, _current_destination, 4.0, 0.2
 			)
 			callback.call(text)
@@ -218,10 +218,43 @@ func get_dialogue_response_async(callback: Callable) -> void:
 	)
 
 
+func get_conversation_reply_async(player_message: String, history: Array[Dictionary], callback: Callable) -> void:
+	## Generate a reply considering full conversation history.
+	if not GeminiClient.has_api_key():
+		callback.call(_get_template_response())
+		return
+
+	var system_prompt: String = _build_system_prompt()
+	var context: String = _build_dialogue_context()
+	context += "\n\nConversation so far:\n"
+	for msg: Dictionary in history:
+		context += "%s: \"%s\"\n" % [msg["speaker"], msg["text"]]
+	context += "\n%s just said: \"%s\"\n" % [PlayerProfile.player_name, player_message]
+	context += "\nRespond naturally in character. 1-3 sentences. Continue the conversation based on what %s said." % PlayerProfile.player_name
+
+	GeminiClient.generate(system_prompt, context, func(text: String, success: bool) -> void:
+		if success and text != "":
+			_add_memory_with_embedding(
+				"Talked with %s at the %s. They said: \"%s\" and I replied: \"%s\"" % [
+					PlayerProfile.player_name, _current_destination,
+					player_message.left(40), text.left(40)],
+				"dialogue", PlayerProfile.player_name,
+				[npc_name, PlayerProfile.player_name] as Array[String],
+				_current_destination, _current_destination, 5.0, 0.3
+			)
+			callback.call(text)
+		else:
+			callback.call(_get_template_response())
+	)
+
+
 func _build_system_prompt() -> String:
-	return "You are %s, a %d-year-old %s in the town of DeepTown. %s\n\nYour speech style: %s\n\nRules:\n- Respond in character, first person, 1-3 sentences only\n- Never break character or mention being an AI\n- Let your personality shine through every word\n- Reference your memories naturally if relevant\n- Your mood and needs should affect how you talk" % [
+	var prompt: String = "You are %s, a %d-year-old %s in the town of DeepTown. %s\n\nYour speech style: %s\n\n" % [
 		npc_name, age, job, personality, speech_style
 	]
+	prompt += "There is a newcomer in town named %s. They recently moved into House 11 on the south row. They seem curious about the town and its people.\n\n" % PlayerProfile.player_name
+	prompt += "Rules:\n- Respond in character, first person, 1-3 sentences only\n- Never break character or mention being an AI\n- Let your personality shine through every word\n- Reference your memories naturally if relevant\n- Your mood and needs should affect how you talk\n- You can ask %s questions too — be curious about the newcomer\n- React to what they say, don't just give generic responses" % PlayerProfile.player_name
+	return prompt
 
 
 func _build_dialogue_context() -> String:
@@ -258,7 +291,7 @@ func _build_dialogue_context() -> String:
 			context += "- %s: %s\n" % [time_str, mem.get("description", "")]
 		context += "\n"
 
-	context += "A traveler (the Player) is standing in front of you and wants to talk. Respond naturally."
+	context += "%s is standing in front of you and wants to talk. They recently moved to DeepTown and live in House 11. Respond naturally." % PlayerProfile.player_name
 	return context
 
 
@@ -269,7 +302,9 @@ func _get_template_response() -> String:
 	if hunger < 20.0:
 		return "I'm starving, need to go eat."
 
-	var player_memories: Array[Dictionary] = memory.get_memories_about("Player")
+	var player_memories: Array[Dictionary] = memory.get_memories_about(PlayerProfile.player_name)
+	if player_memories.is_empty():
+		player_memories = memory.get_memories_about("Player")  # backward compat
 	if not player_memories.is_empty():
 		var latest: Dictionary = player_memories[-1]
 		var location: String = latest.get("observed_near", latest.get("observer_location", "town"))
@@ -420,7 +455,7 @@ func _wants_to_visit(building: String, _hour: int) -> bool:
 # --- NPC-to-NPC Conversations ---
 
 func _try_npc_conversation() -> void:
-	## If another NPC is within 2 tiles and we haven't talked recently, have a brief exchange.
+	## If another NPC is within 2 tiles and we haven't talked recently, have a real conversation.
 	for other: Node in get_tree().get_nodes_in_group("npcs"):
 		if other == self:
 			continue
@@ -431,39 +466,114 @@ func _try_npc_conversation() -> void:
 			continue
 
 		var other_name: String = other_npc.npc_name
-		# Cooldown check
+
+		# Cooldown check — 2 hours between conversations with same NPC
 		if _last_conversation_time.has(other_name):
 			if GameClock.total_minutes - _last_conversation_time[other_name] < CONVERSATION_COOLDOWN:
 				continue
 
+		# Set cooldown for both
 		_last_conversation_time[other_name] = GameClock.total_minutes
 		other_npc._last_conversation_time[npc_name] = GameClock.total_minutes
 
-		# Face each other during conversation
+		# Face each other
 		_face_toward(other_npc.global_position)
 		other_npc._face_toward(global_position)
-
-		# Create conversation memories for BOTH NPCs
-		var topic: String = _pick_conversation_topic(other_npc)
-
-		_add_memory_with_embedding(
-			"Had a conversation with %s about %s at the %s" % [other_name, topic, _current_destination],
-			"dialogue", other_name, [npc_name, other_name] as Array[String],
-			_current_destination, _current_destination, 3.0, 0.2
-		)
-
-		other_npc._add_memory_with_embedding(
-			"Had a conversation with %s about %s at the %s" % [npc_name, topic, _current_destination],
-			"dialogue", npc_name, [other_npc.npc_name, npc_name] as Array[String],
-			_current_destination, _current_destination, 3.0, 0.2
-		)
 
 		# Social boost for both
 		social = minf(social + 5.0, 100.0)
 		other_npc.social = minf(other_npc.social + 5.0, 100.0)
 
-		print("[%s] Chatted with %s about %s" % [npc_name, other_name, topic])
+		# If no API key, fall back to fake topic-label system
+		if not GeminiClient.has_api_key():
+			_fake_npc_conversation(other_npc)
+			break
+
+		# Real conversation: I speak first, then they reply
+		_real_npc_conversation(other_npc)
 		break  # Only one conversation per tick
+
+
+func _fake_npc_conversation(other_npc: CharacterBody2D) -> void:
+	## Fallback when Gemini is unavailable. Same as old behavior.
+	var other_name: String = other_npc.npc_name
+	var topic: String = _pick_conversation_topic(other_npc)
+
+	_add_memory_with_embedding(
+		"Had a conversation with %s about %s at the %s" % [other_name, topic, _current_destination],
+		"dialogue", other_name, [npc_name, other_name] as Array[String],
+		_current_destination, _current_destination, 3.0, 0.2
+	)
+	other_npc._add_memory_with_embedding(
+		"Had a conversation with %s about %s at the %s" % [npc_name, topic, _current_destination],
+		"dialogue", npc_name, [other_npc.npc_name, npc_name] as Array[String],
+		_current_destination, _current_destination, 3.0, 0.2
+	)
+	print("[%s] Chatted with %s about %s (template)" % [npc_name, other_name, topic])
+
+
+func _real_npc_conversation(other_npc: CharacterBody2D) -> void:
+	## Gemini-powered 2-line exchange. I say something, they reply.
+
+	# Skip if Gemini queue is backed up (cost control)
+	if GeminiClient._request_queue.size() > 10:
+		_fake_npc_conversation(other_npc)
+		return
+
+	var other_name: String = other_npc.npc_name
+	var topic: String = _pick_conversation_topic(other_npc)
+
+	# Build context for the initiator (me)
+	var my_system: String = _build_npc_chat_system_prompt()
+	var my_context: String = _build_npc_chat_context(other_npc, topic, "")
+
+	# Step 1: I generate my opening line
+	GeminiClient.generate(my_system, my_context, func(my_line: String, my_success: bool) -> void:
+		if not my_success or my_line == "":
+			my_line = _get_npc_chat_fallback(topic)
+
+		my_line = my_line.strip_edges().replace("\"", "").left(120)
+
+		# Step 2: Other NPC generates their reply
+		var their_system: String = other_npc._build_npc_chat_system_prompt()
+		var their_context: String = other_npc._build_npc_chat_context(self, topic, my_line)
+
+		GeminiClient.generate(their_system, their_context, func(their_line: String, their_success: bool) -> void:
+			if not their_success or their_line == "":
+				their_line = other_npc._get_npc_chat_fallback(topic)
+
+			their_line = their_line.strip_edges().replace("\"", "").left(120)
+
+			# Store actual dialogue in both NPCs' memories
+			_add_memory_with_embedding(
+				"I said to %s: \"%s\" — %s replied: \"%s\" (at the %s)" % [
+					other_name, my_line, other_name, their_line, _current_destination],
+				"dialogue", other_name, [npc_name, other_name] as Array[String],
+				_current_destination, _current_destination, 4.0, 0.2
+			)
+
+			other_npc._add_memory_with_embedding(
+				"%s said to me: \"%s\" — I replied: \"%s\" (at the %s)" % [
+					npc_name, my_line, their_line, _current_destination],
+				"dialogue", npc_name, [other_npc.npc_name, npc_name] as Array[String],
+				_current_destination, _current_destination, 4.0, 0.2
+			)
+
+			# Show speech bubbles
+			_show_speech_bubble(my_line)
+			get_tree().create_timer(2.0).timeout.connect(func() -> void:
+				if is_instance_valid(other_npc):
+					other_npc._show_speech_bubble(their_line)
+			)
+
+			print("[NPC Chat] %s: \"%s\"" % [npc_name, my_line])
+			print("[NPC Chat] %s: \"%s\"" % [other_name, their_line])
+			print("[NPC Chat] %s→%s at %s (queue: %d, total_calls: %d)" % [
+				npc_name, other_name, _current_destination,
+				GeminiClient._request_queue.size(), GeminiClient.total_requests
+			])
+		)
+	)
 
 
 func _pick_conversation_topic(other_npc: CharacterBody2D) -> String:
@@ -488,14 +598,83 @@ func _pick_conversation_topic(other_npc: CharacterBody2D) -> String:
 	# Memory based — if I have a memory about the player
 	var recent: Array[Dictionary] = memory.get_recent(3)
 	for mem: Dictionary in recent:
-		if mem.get("actor", "") == "Player":
-			topics.append("the stranger they saw in town")
+		if mem.get("actor", "") == PlayerProfile.player_name or mem.get("actor", "") == "Player":
+			topics.append("the newcomer %s" % PlayerProfile.player_name)
 			break
 
 	# Random flavor
 	topics.append_array(["the weather", "town gossip", "old times", "their families"])
 
 	return topics[randi() % topics.size()]
+
+
+func _build_npc_chat_system_prompt() -> String:
+	## System prompt for NPC-to-NPC conversation (shorter than player dialogue).
+	return "You are %s, age %d, %s in DeepTown. %s\nSpeech style: %s\n\nRules:\n- Say ONE sentence only, in character, first person\n- This is casual chat with a fellow townsperson, not a formal speech\n- Be natural — greetings, complaints, observations, jokes, gossip\n- Reference your current mood or needs if relevant\n- NEVER break character or mention being an AI" % [
+		npc_name, age, job, personality, speech_style
+	]
+
+
+func _build_npc_chat_context(other_npc: CharacterBody2D, topic: String, their_line: String) -> String:
+	## Build the user message for NPC-to-NPC conversation.
+	var hour: int = GameClock.hour
+	var period: String = "morning" if hour < 12 else ("afternoon" if hour < 17 else ("evening" if hour < 21 else "night"))
+
+	var context: String = "It's %s at the %s. " % [period, _current_destination]
+
+	# Your current state
+	if hunger < 40.0:
+		context += "You're quite hungry. "
+	if energy < 30.0:
+		context += "You're exhausted. "
+	if social > 80.0:
+		context += "You're in a great mood. "
+
+	# Recent relevant memories (top 3)
+	var recent: Array[Dictionary] = memory.get_recent(3)
+	if not recent.is_empty():
+		context += "Recent memories: "
+		for mem: Dictionary in recent:
+			context += mem.get("description", "") + ". "
+
+	# The conversation setup
+	if their_line == "":
+		# I'm starting the conversation
+		context += "\nYou see %s (%s, age %d) nearby. Start a brief chat about %s. Say ONE sentence." % [
+			other_npc.npc_name, other_npc.job, other_npc.age, topic
+		]
+	else:
+		# I'm replying to them
+		context += "\n%s just said to you: \"%s\"\nReply naturally with ONE sentence." % [
+			other_npc.npc_name, their_line
+		]
+
+	return context
+
+
+func _get_npc_chat_fallback(topic: String) -> String:
+	## Fallback one-liner when Gemini fails mid-conversation.
+	var fallbacks: Array[String] = [
+		"Interesting weather we're having.",
+		"Same old, same old around here.",
+		"Can't complain, I suppose.",
+		"Been busy at the %s lately." % workplace_building,
+		"What do you think about %s?" % topic,
+	]
+	return fallbacks[randi() % fallbacks.size()]
+
+
+func _show_speech_bubble(text: String) -> void:
+	## Show floating text above this NPC's head for 4 seconds.
+	# Remove any existing bubble first
+	for child: Node in get_children():
+		if child.has_method("show_text"):
+			child.queue_free()
+
+	var bubble: Node2D = Node2D.new()
+	bubble.set_script(load("res://scripts/ui/speech_bubble.gd"))
+	add_child(bubble)
+	bubble.show_text(text, 4.0)
 
 
 # --- Perception ---
@@ -508,7 +687,7 @@ func _on_perception_body_entered(body: Node2D) -> void:
 
 	var actor_name: String = ""
 	if body.is_in_group("player"):
-		actor_name = "Player"
+		actor_name = PlayerProfile.player_name
 	elif body.is_in_group("npcs"):
 		actor_name = body.npc_name
 	else:
@@ -527,7 +706,7 @@ func _on_perception_body_entered(body: Node2D) -> void:
 
 	var importance: float = 2.0  # Default for NPC sightings
 	var valence: float = 0.0     # Neutral
-	if actor_name == "Player":
+	if body.is_in_group("player"):
 		importance = 5.0
 		valence = 0.1  # Slightly positive — player is interesting
 

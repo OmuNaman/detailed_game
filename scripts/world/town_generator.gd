@@ -484,8 +484,12 @@ func _add_building_labels() -> void:
 		var w: int = bld["w"]
 		var bld_name: String = bld["name"]
 
+		var display_name: String = bld_name
+		if bld_name == "House 11" and PlayerProfile.is_name_set:
+			display_name = "%s's House" % PlayerProfile.player_name
+
 		var label := Label.new()
-		label.text = bld_name
+		label.text = display_name
 		label.position = Vector2(gx * TILE_SIZE, (gy - 1) * TILE_SIZE)
 		label.add_theme_font_size_override("font_size", 10)
 		label.add_theme_color_override("font_color", Color.WHITE)

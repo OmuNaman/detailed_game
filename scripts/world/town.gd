@@ -13,6 +13,17 @@ func _ready() -> void:
 
 	_spawn_npcs(town_map)
 
+	# Show name entry if first time
+	if not PlayerProfile.is_name_set:
+		_show_name_entry()
+
+
+func _show_name_entry() -> void:
+	get_tree().paused = true
+	var name_scene: PackedScene = load("res://scenes/ui/name_entry.tscn")
+	var name_ui: Node = name_scene.instantiate()
+	add_child(name_ui)
+
 
 func _notification(what: int) -> void:
 	if what == NOTIFICATION_WM_CLOSE_REQUEST:
