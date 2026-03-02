@@ -2,7 +2,7 @@
 
 **Date:** 2026-03-02
 **Phase:** Phase 1 — Foundation
-**Status:** Navigation rewritten, testing needed
+**Status:** NPCs still not moving — navigation fix did not resolve the issue
 
 ---
 
@@ -43,6 +43,10 @@ Instead of relying on per-tile regions, we now build one unified navmesh:
 - No dependency on TileMapLayer's navigation implementation details
 - Works identically across Godot versions
 - ~1700 walkable tile quads with shared vertices is trivial for NavigationServer2D
+
+## Result
+
+**NPCs still not moving.** The NavigationRegion2D approach with shared-vertex quads did not fix the issue. Further debugging needed — likely a deeper problem with how NavigationPolygon data is consumed by NavigationServer2D in Godot 4.6, or a issue with how/when NPCs query the navigation map.
 
 ---
 
