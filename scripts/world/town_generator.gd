@@ -10,7 +10,9 @@ const MAP_HEIGHT: int = 45
 enum Tile { GRASS1, PATH, WATER, WALL_FRONT, FLOOR, ROOF, DOOR, GRASS2, GRASS3, WALL_SIDE,
 	COBBLESTONE, DIRT_PATH,
 	# --- Furniture ---
-	BED, TABLE, COUNTER, OVEN, ANVIL, PEW, ALTAR, BARREL, SHELF, DESK }
+	BED, TABLE, COUNTER, OVEN, ANVIL, PEW, ALTAR, BARREL, SHELF, DESK,
+	# --- Building Exterior ---
+	WINDOW_FRONT, WINDOW_SIDE, AWNING }
 # Atlas layout: each tile gets column = Tile enum value, row = 0
 
 # Grass variant weights for visual variety
@@ -91,6 +93,7 @@ func _ready() -> void:
 	_init_map()
 	_carve_paths()
 	_place_buildings()
+	_decorate_buildings()
 	_place_furniture()
 	_place_water()
 	_render_map()
@@ -140,6 +143,10 @@ func _create_tileset() -> TileSet:
 		"res://assets/sprites/tiles/barrel.png",      # 19 = BARREL
 		"res://assets/sprites/tiles/shelf.png",       # 20 = SHELF
 		"res://assets/sprites/tiles/desk.png",        # 21 = DESK
+		# --- Building Exterior ---
+		"res://assets/sprites/tiles/window_front.png", # 22 = WINDOW_FRONT
+		"res://assets/sprites/tiles/window_side.png",  # 23 = WINDOW_SIDE
+		"res://assets/sprites/tiles/awning.png",       # 24 = AWNING
 	]
 
 	# Build a horizontal atlas image (N tiles wide, 1 tile tall)
@@ -264,6 +271,57 @@ func _place_buildings() -> void:
 		_set_tile(door_x, gy + h - 1, Tile.DOOR)
 
 
+func _decorate_buildings() -> void:
+	## Adds windows to walls and awnings above shop doors.
+
+	var awning_buildings: Array[String] = [
+		"General Store", "Bakery", "Tavern"
+	]
+
+	for bld: Dictionary in _buildings:
+		var bld_name: String = bld["name"]
+		var gx: int = bld["gx"]
+		var gy: int = bld["gy"]
+		var w: int = bld["w"]
+		var h: int = bld["h"]
+		var door_x: int = gx + w / 2
+
+		# --- FRONT WALL WINDOWS ---
+		# On both sides of the door, skip door and adjacent tiles
+		if w >= 6:
+			for x: int in range(gx + 1, gx + w - 1):
+				if x == door_x or x == door_x - 1 or x == door_x + 1:
+					continue
+				if _map[gy + h - 1][x] == Tile.WALL_FRONT:
+					_set_tile(x, gy + h - 1, Tile.WINDOW_FRONT)
+
+		# --- SIDE WALL WINDOWS ---
+		if h >= 5:
+			var wy: int = gy + 2
+			if _map[wy][gx] == Tile.WALL_SIDE:
+				_set_tile(gx, wy, Tile.WINDOW_SIDE)
+			if _map[wy][gx + w - 1] == Tile.WALL_SIDE:
+				_set_tile(gx + w - 1, wy, Tile.WINDOW_SIDE)
+
+		# Church gets extra side windows (tall building)
+		if bld_name == "Church" and h >= 7:
+			for wy: int in [gy + 2, gy + 4]:
+				if _map[wy][gx] == Tile.WALL_SIDE:
+					_set_tile(gx, wy, Tile.WINDOW_SIDE)
+				if _map[wy][gx + w - 1] == Tile.WALL_SIDE:
+					_set_tile(gx + w - 1, wy, Tile.WINDOW_SIDE)
+
+		# --- AWNINGS above shop doors ---
+		if bld_name in awning_buildings:
+			_set_tile(door_x, gy, Tile.AWNING)
+			# Wider awning for bigger shops
+			if w >= 7:
+				if door_x - 1 > gx:
+					_set_tile(door_x - 1, gy, Tile.AWNING)
+				if door_x + 1 < gx + w - 1:
+					_set_tile(door_x + 1, gy, Tile.AWNING)
+
+
 func _place_furniture() -> void:
 	## Coordinates are interior offsets from (gx+1, gy+1).
 	## Each entry: [dx, dy, TileType]
@@ -363,10 +421,10 @@ func _render_map() -> void:
 			var coord := Vector2i(x, y)
 			var atlas_coord := Vector2i(tile_id, 0)
 
-			# Roofs and walls go on building layer (renders above ground)
-			if tile_id == Tile.ROOF or tile_id == Tile.WALL_FRONT or tile_id == Tile.WALL_SIDE:
+			# Roofs, walls, and exterior details go on building layer
+			if tile_id == Tile.ROOF or tile_id == Tile.WALL_FRONT or tile_id == Tile.WALL_SIDE or tile_id == Tile.WINDOW_FRONT or tile_id == Tile.WINDOW_SIDE or tile_id == Tile.AWNING:
 				_building_layer.set_cell(coord, 0, atlas_coord)
-			elif tile_id >= Tile.BED:
+			elif tile_id >= Tile.BED and tile_id <= Tile.DESK:
 				# Furniture: floor underneath + furniture sprite on top
 				_ground_layer.set_cell(coord, 0, Vector2i(Tile.FLOOR, 0))
 				_building_layer.set_cell(coord, 0, atlas_coord)

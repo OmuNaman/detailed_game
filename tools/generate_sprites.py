@@ -489,6 +489,80 @@ def gen_desk():
 
 
 # ============================================================
+# BUILDING EXTERIOR TILES
+# ============================================================
+
+GLASS_LIGHT  = (180, 210, 230)
+GLASS_MID    = (140, 175, 200)
+GLASS_DARK   = (100, 140, 170)
+FRAME_WOOD   = (110, 75, 40)
+
+
+def gen_window_front():
+    """Front wall with a 4-pane glass window."""
+    img, d = new()
+    # Base wall
+    d.rectangle([0, 0, 31, 31], fill=WALL_BROWN)
+    for row in range(4):
+        y = row * 8
+        offset = 0 if row % 2 == 0 else 8
+        for sx in range(offset, 32, 16):
+            d.line([(sx, y), (sx, y + 7)], fill=WALL_DARK)
+        d.line([(0, y), (31, y)], fill=WALL_DARK)
+    # Window frame
+    d.rectangle([8, 6, 23, 22], fill=FRAME_WOOD)
+    # Glass panes (2x2 grid)
+    d.rectangle([9, 7, 15, 13], fill=GLASS_MID)
+    d.rectangle([16, 7, 22, 13], fill=GLASS_LIGHT)
+    d.rectangle([9, 14, 15, 21], fill=GLASS_LIGHT)
+    d.rectangle([16, 14, 22, 21], fill=GLASS_MID)
+    # Cross frame divider
+    d.line([(15, 7), (15, 21)], fill=FRAME_WOOD)
+    d.line([(16, 7), (16, 21)], fill=FRAME_WOOD)
+    d.line([(9, 13), (22, 13)], fill=FRAME_WOOD)
+    d.line([(9, 14), (22, 14)], fill=FRAME_WOOD)
+    # Windowsill
+    d.rectangle([7, 22, 24, 24], fill=WALL_LIGHT)
+    save(img, "tiles", "window_front.png")
+
+
+def gen_window_side():
+    """Side wall with a narrow window."""
+    img, d = new()
+    # Base wall (vertical planks)
+    d.rectangle([0, 0, 31, 31], fill=WOOD)
+    for sx in range(0, 32, 6):
+        d.line([(sx, 0), (sx, 31)], fill=WOOD_DARK)
+    for sy in [8, 16, 24]:
+        d.line([(0, sy), (31, sy)], fill=WOOD_DARK)
+    # Window
+    d.rectangle([10, 6, 21, 22], fill=FRAME_WOOD)
+    d.rectangle([11, 7, 20, 21], fill=GLASS_MID)
+    d.line([(11, 14), (20, 14)], fill=FRAME_WOOD)
+    d.rectangle([12, 8, 14, 12], fill=GLASS_LIGHT)
+    d.rectangle([9, 22, 22, 24], fill=WALL_LIGHT)
+    save(img, "tiles", "window_side.png")
+
+
+def gen_awning():
+    """Striped awning/canopy above shop entrance."""
+    img, d = new()
+    for row in range(4):
+        y = row * 8
+        color = (200, 60, 60) if row % 2 == 0 else (230, 220, 200)
+        d.rectangle([0, y, 31, y + 7], fill=color)
+    # Bottom fringe
+    for x in range(0, 32, 4):
+        d.rectangle([x, 28, x + 2, 31], fill=(200, 60, 60))
+    # Support rod
+    d.line([(0, 0), (31, 0)], fill=(60, 55, 50))
+    d.line([(0, 1), (31, 1)], fill=(90, 85, 80))
+    # Shadow
+    d.rectangle([0, 24, 31, 27], fill=(180, 50, 50))
+    save(img, "tiles", "awning.png")
+
+
+# ============================================================
 # CHARACTERS — shared helper
 # ============================================================
 
@@ -721,6 +795,12 @@ def main():
     gen_shelf()
     gen_desk()
 
+    # Building Exterior
+    print("\n[Building Exterior]")
+    gen_window_front()
+    gen_window_side()
+    gen_awning()
+
     # Characters
     print("\n[Characters]")
     gen_player()
@@ -736,7 +816,7 @@ def main():
     gen_bram()
     gen_lyra()
 
-    print(f"\nDone! 34 sprites generated.")
+    print(f"\nDone! 37 sprites generated.")
 
 
 if __name__ == "__main__":
