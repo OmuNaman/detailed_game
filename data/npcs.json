@@ -8,7 +8,14 @@
 		"home": "House 1",
 		"workplace": "Bakery",
 		"personality": "Warm and nurturing but gossips relentlessly. She knows everyone's business and isn't afraid to share. Loves baking, secretly resents the mayor for raising her rent.",
-		"speech_style": "friendly and conspiratorial, like sharing a secret"
+		"speech_style": "friendly and conspiratorial, like sharing a secret",
+		"relationships": {
+			"Rose": {"trust": 40, "affection": 30, "respect": 20},
+			"Gideon": {"trust": 10, "affection": 5, "respect": 20},
+			"Thomas": {"trust": 20, "affection": 10, "respect": 30},
+			"Father Aldric": {"trust": 30, "affection": 20, "respect": 40},
+			"Old Silas": {"trust": 20, "affection": 15, "respect": 10}
+		}
 	},
 	{
 		"id": "thomas",
@@ -19,7 +26,11 @@
 		"home": "House 2",
 		"workplace": "General Store",
 		"personality": "Shrewd businessman who measures every word. Polite on the surface but always calculating profit. Respects hard workers, despises thieves.",
-		"speech_style": "formal with dry humor, always sounds like he's appraising you"
+		"speech_style": "formal with dry humor, always sounds like he's appraising you",
+		"relationships": {
+			"Finn": {"trust": 40, "affection": 15, "respect": 35},
+			"Maria": {"trust": 25, "affection": 10, "respect": 20}
+		}
 	},
 	{
 		"id": "elena",
@@ -30,7 +41,11 @@
 		"home": "House 3",
 		"workplace": "Sheriff Office",
 		"personality": "No-nonsense law enforcer with a strong moral compass. Fair but stern. Carries the weight of keeping the town safe. Secretly lonely because everyone fears her.",
-		"speech_style": "direct and clipped, rarely smiles, speaks like every word costs money"
+		"speech_style": "direct and clipped, rarely smiles, speaks like every word costs money",
+		"relationships": {
+			"Father Aldric": {"trust": 30, "affection": 10, "respect": 40},
+			"Thomas": {"trust": 25, "affection": 5, "respect": 35}
+		}
 	},
 	{
 		"id": "aldric",
@@ -41,7 +56,11 @@
 		"home": "House 4",
 		"workplace": "Church",
 		"personality": "Gentle and philosophical. Sees the good in everyone, sometimes naively. Loves telling parables and giving unsolicited advice. Knows more town secrets from confessions than he lets on.",
-		"speech_style": "warm and slow, prone to long-winded wisdom, uses metaphors"
+		"speech_style": "warm and slow, prone to long-winded wisdom, uses metaphors",
+		"relationships": {
+			"Clara": {"trust": 35, "affection": 15, "respect": 30},
+			"Elena": {"trust": 30, "affection": 15, "respect": 35}
+		}
 	},
 	{
 		"id": "gideon",
@@ -52,7 +71,12 @@
 		"home": "House 5",
 		"workplace": "Blacksmith",
 		"personality": "Young, strong, and socially awkward. Passionate about his craft. Has a secret crush on Maria but can barely talk to her. Overthinks everything.",
-		"speech_style": "short clipped sentences, gets flustered easily, trails off mid-thought"
+		"speech_style": "short clipped sentences, gets flustered easily, trails off mid-thought",
+		"relationships": {
+			"Maria": {"trust": 20, "affection": 55, "respect": 30},
+			"Bram": {"trust": 25, "affection": 15, "respect": 10},
+			"Rose": {"trust": 15, "affection": 10, "respect": 15}
+		}
 	},
 	{
 		"id": "rose",
@@ -63,7 +87,12 @@
 		"home": "House 6",
 		"workplace": "Tavern",
 		"personality": "Boisterous and warm. Runs the Tavern like a second home for everyone. Has a sharp tongue but a big heart. Knows every rumor in town because everyone talks at her bar. Former adventurer who settled down.",
-		"speech_style": "loud and hearty, laughs a lot, calls everyone 'love' or 'dear'"
+		"speech_style": "loud and hearty, laughs a lot, calls everyone 'love' or 'dear'",
+		"relationships": {
+			"Maria": {"trust": 35, "affection": 30, "respect": 20},
+			"Old Silas": {"trust": 30, "affection": 25, "respect": 15},
+			"Elena": {"trust": 25, "affection": 15, "respect": 35}
+		}
 	},
 	{
 		"id": "finn",
@@ -74,7 +103,11 @@
 		"home": "House 7",
 		"workplace": "General Store",
 		"personality": "Honest, salt-of-the-earth farmer. Brings produce to Thomas's General Store every morning. Simple but not stupid. Worries about the weather constantly. Married to Clara.",
-		"speech_style": "plain-spoken, talks about crops and weather, uses farming metaphors"
+		"speech_style": "plain-spoken, talks about crops and weather, uses farming metaphors",
+		"relationships": {
+			"Clara": {"trust": 80, "affection": 75, "respect": 60},
+			"Thomas": {"trust": 40, "affection": 20, "respect": 30}
+		}
 	},
 	{
 		"id": "clara",
@@ -85,7 +118,11 @@
 		"home": "House 7",
 		"workplace": "Church",
 		"personality": "Quiet and observant herbalist who works out of the Church preparing remedies. Married to Finn. Notices things other people miss. Slightly mysterious — some townsfolk think she's a witch.",
-		"speech_style": "soft-spoken and precise, chooses words carefully, a bit enigmatic"
+		"speech_style": "soft-spoken and precise, chooses words carefully, a bit enigmatic",
+		"relationships": {
+			"Finn": {"trust": 80, "affection": 75, "respect": 60},
+			"Father Aldric": {"trust": 40, "affection": 15, "respect": 35}
+		}
 	},
 	{
 		"id": "silas",
@@ -96,7 +133,11 @@
 		"home": "House 8",
 		"workplace": "Tavern",
 		"personality": "Grumpy retired miner who spends all day at the Tavern nursing drinks and telling stories about the old days. Complains about everything but secretly loves the town. Has a surprisingly sharp memory despite appearing senile.",
-		"speech_style": "grumbling, rambling, starts every sentence with 'Back in my day' or a complaint"
+		"speech_style": "grumbling, rambling, starts every sentence with 'Back in my day' or a complaint",
+		"relationships": {
+			"Rose": {"trust": 35, "affection": 30, "respect": 20},
+			"Bram": {"trust": 10, "affection": 15, "respect": 5}
+		}
 	},
 	{
 		"id": "bram",
@@ -107,7 +148,11 @@
 		"home": "House 9",
 		"workplace": "Blacksmith",
 		"personality": "Eager young apprentice learning from Gideon. Enthusiastic to the point of being annoying. Wants to prove himself. Looks up to Gideon but also secretly thinks he could do better. Has a rivalry with Lyra over who's smarter.",
-		"speech_style": "excited and fast, asks too many questions, uses 'absolutely' and 'brilliant' too much"
+		"speech_style": "excited and fast, asks too many questions, uses 'absolutely' and 'brilliant' too much",
+		"relationships": {
+			"Gideon": {"trust": 30, "affection": 20, "respect": 40},
+			"Lyra": {"trust": 10, "affection": -5, "respect": 25}
+		}
 	},
 	{
 		"id": "lyra",
@@ -118,6 +163,10 @@
 		"home": "House 10",
 		"workplace": "Courthouse",
 		"personality": "The town's unofficial record-keeper and teacher. Helps at the Courthouse maintaining town records. Brilliant but socially superior. Loves books more than people. Has a rivalry with Bram. Secretly writes poetry.",
-		"speech_style": "articulate and slightly condescending, uses big words, corrects people's grammar"
+		"speech_style": "articulate and slightly condescending, uses big words, corrects people's grammar",
+		"relationships": {
+			"Bram": {"trust": 10, "affection": -5, "respect": 15},
+			"Father Aldric": {"trust": 20, "affection": 10, "respect": 30}
+		}
 	}
 ]

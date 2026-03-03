@@ -13,6 +13,9 @@ func _ready() -> void:
 
 	_spawn_npcs(town_map)
 
+	# Daily relationship decay at midnight
+	EventBus.time_hour_changed.connect(_on_hour_changed)
+
 	# Show name entry if first time
 	if not PlayerProfile.is_name_set:
 		_show_name_entry()
@@ -64,6 +67,17 @@ func _spawn_npcs(town_map: Node2D) -> void:
 
 		add_child(npc)
 
+	# Seed initial relationships from npcs.json (only if no saved data exists)
+	for npc_data_entry: Dictionary in npc_data_list:
+		var from_name: String = npc_data_entry.get("name", "")
+		var rels: Dictionary = npc_data_entry.get("relationships", {})
+		for target_name: String in rels:
+			var existing: Dictionary = Relationships.get_relationship(from_name, target_name)
+			if existing["trust"] == 0 and existing["affection"] == 0 and existing["respect"] == 0:
+				var r: Dictionary = rels[target_name]
+				Relationships.modify(from_name, target_name,
+					r.get("trust", 0), r.get("affection", 0), r.get("respect", 0))
+
 	# Load saved memories after all NPCs are in the scene tree
 	_load_all_memories()
 
@@ -93,7 +107,23 @@ func _save_all_memories() -> void:
 				})
 			conv_file.store_string(JSON.stringify(conv_list, "\t"))
 
-		# 3. Profile snapshot
+		# 3. Gossip log (human-readable)
+		var gossip: Array[Dictionary] = npc.memory.get_by_type("gossip")
+		if not gossip.is_empty():
+			var gossip_file := FileAccess.open(folder + "gossip_heard.json", FileAccess.WRITE)
+			if gossip_file:
+				var gossip_list: Array[Dictionary] = []
+				for g: Dictionary in gossip:
+					gossip_list.append({
+						"time": g.get("game_time", 0),
+						"from": g.get("gossip_source", "unknown"),
+						"about": g.get("actor", "unknown"),
+						"description": g.get("description", ""),
+						"hops": g.get("gossip_hops", 0),
+					})
+				gossip_file.store_string(JSON.stringify(gossip_list, "\t"))
+
+		# 4. Profile snapshot
 		var profile_file := FileAccess.open(folder + "profile.json", FileAccess.WRITE)
 		if profile_file:
 			var profile: Dictionary = {
@@ -111,6 +141,9 @@ func _save_all_memories() -> void:
 				"total_observations": npc.memory.get_by_type("observation").size(),
 			}
 			profile_file.store_string(JSON.stringify(profile, "\t"))
+
+	# Save relationship data alongside NPC memories
+	Relationships.save_relationships()
 
 	print("[SaveManager] Saved %d NPC data folders to user://npc_data/" % get_tree().get_nodes_in_group("npcs").size())
 
@@ -150,3 +183,11 @@ func _load_all_memories() -> void:
 			npc.memory.deserialize(old_data[npc.npc_name])
 			print("[SaveManager] Migrated %d memories for %s" % [
 				npc.memory.memories.size(), npc.npc_name])
+
+
+func _on_hour_changed(hour: int) -> void:
+	# Daily relationship decay at midnight — all scores drift 1 point toward neutral
+	if hour == 0:
+		Relationships.decay_all(1)
+		if OS.is_debug_build():
+			print("[Relationships] Daily decay applied at midnight")

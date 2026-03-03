@@ -64,6 +64,15 @@ func _refresh() -> void:
 				desc = desc.substr(0, 42) + "..."
 			text += "\n  [color=#888]%s[/color]" % desc
 
+		# Show top 2 relationships
+		var friends: Array[String] = Relationships.get_closest_friends(npc.npc_name, 2)
+		if not friends.is_empty():
+			var rel_parts: Array[String] = []
+			for friend: String in friends:
+				var op: float = Relationships.get_opinion(npc.npc_name, friend)
+				rel_parts.append("%s:%+d" % [friend.left(6), int(op)])
+			text += "\n  [color=#DAB]Rels: %s[/color]" % " ".join(rel_parts)
+
 		entry.text = text
 		_container.add_child(entry)
 

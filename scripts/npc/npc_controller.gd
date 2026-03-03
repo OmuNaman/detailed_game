@@ -87,6 +87,11 @@ var _reflection_cooldown: bool = false  # Prevent double-triggers
 var _last_environment_scan: int = -120  # Start cold so first scan triggers
 const ENVIRONMENT_SCAN_INTERVAL: int = 30  # Every 30 game minutes
 
+# Daily planning
+var _daily_plan: Array[Dictionary] = []  # [{hour, end_hour, destination, reason, completed}]
+var _last_plan_day: int = -1
+var _planning_in_progress: bool = false
+
 @onready var sprite: Sprite2D = $Sprite2D
 @onready var name_label: Label = $NameLabel
 
@@ -259,6 +264,15 @@ func _update_activity() -> void:
 		current_activity = "standing around"
 		_activity_emoji = "..."
 		_update_activity_label()
+		return
+
+	# Check if current destination is from a plan
+	var active_plan: Dictionary = _get_current_plan()
+	if not active_plan.is_empty():
+		current_activity = active_plan.get("reason", "visiting")
+		_activity_emoji = "!"
+		_update_activity_label()
+		_update_visual_state()
 		return
 
 	var hour: int = GameClock.hour
@@ -464,9 +478,21 @@ func _try_reflect() -> void:
 
 
 func _build_reflection_system_prompt() -> String:
-	return "You are %s, a %d-year-old %s in DeepTown. %s\n\nYou are reflecting on your recent experiences before going to sleep. Generate exactly 3 higher-level insights — things you've realized, patterns you've noticed, or feelings that have been growing. These should be personal realizations, not just summaries of events.\n\nRules:\n- Write in first person as %s\n- Each insight should be 1 sentence\n- Focus on relationships, patterns, emotions, or realizations\n- Reference specific people or events from your memories\n- Number them 1, 2, 3\n- Do NOT just repeat the memories — synthesize meaning from them" % [
-		npc_name, age, job, personality, npc_name
+	var prompt: String = "You are %s, a %d-year-old %s in DeepTown. %s\n\n" % [
+		npc_name, age, job, personality
 	]
+
+	# Add relationship awareness to reflections
+	var all_rels: Dictionary = Relationships.get_all_for(npc_name)
+	if not all_rels.is_empty():
+		prompt += "Your current relationships:\n"
+		for target: String in all_rels:
+			var label: String = Relationships.get_opinion_label(npc_name, target)
+			prompt += "- You %s %s\n" % [label, target]
+		prompt += "\n"
+
+	prompt += "You are reflecting on your recent experiences before going to sleep. Generate exactly 3 higher-level insights — things you've realized, patterns you've noticed, or feelings that have been growing. These should be personal realizations, not just summaries of events.\n\nRules:\n- Write in first person as %s\n- Each insight should be 1 sentence\n- Focus on relationships, patterns, emotions, or realizations\n- Reference specific people or events from your memories\n- Number them 1, 2, 3\n- Do NOT just repeat the memories — synthesize meaning from them" % npc_name
+	return prompt
 
 
 func _build_reflection_context(recent_memories: Array[Dictionary]) -> String:
@@ -488,6 +514,13 @@ func _build_reflection_context(recent_memories: Array[Dictionary]) -> String:
 			context += "- [previous reflection, %s] %s\n" % [time_str, mem.get("description", "")]
 		else:
 			context += "- [%s] %s\n" % [time_str, mem.get("description", "")]
+
+	# Today's plan status
+	if not _daily_plan.is_empty():
+		context += "\nYour plans for today:\n"
+		for plan: Dictionary in _daily_plan:
+			var status: String = "completed" if plan["completed"] else "not yet done"
+			context += "- %s at the %s (%s)\n" % [plan["reason"], plan["destination"], status]
 
 	context += "\nWhat 3 insights or realizations do you draw from these experiences? Number them 1, 2, 3."
 	return context
@@ -522,6 +555,237 @@ func _parse_reflections(text: String) -> Array[String]:
 	return results
 
 
+# --- Daily Planning ---
+
+func _generate_daily_plan() -> void:
+	## Ask Gemini for today's plan: 2-4 specific goals with times and locations.
+	if _planning_in_progress:
+		return
+	if not GeminiClient.has_api_key():
+		_generate_fallback_plan()
+		return
+
+	_planning_in_progress = true
+	_last_plan_day = _get_current_day()
+
+	var system_prompt: String = _build_planning_system_prompt()
+	var user_message: String = _build_planning_context()
+
+	GeminiClient.generate(system_prompt, user_message, func(text: String, success: bool) -> void:
+		_planning_in_progress = false
+
+		if not success or text == "":
+			print("[Planning] %s — Gemini failed, using fallback plan" % npc_name)
+			_generate_fallback_plan()
+			return
+
+		_daily_plan = _parse_plan(text)
+
+		# Store plan as a memory
+		if not _daily_plan.is_empty():
+			var plan_summary: Array[String] = []
+			for p: Dictionary in _daily_plan:
+				plan_summary.append("%s at the %s around %d:00" % [p["reason"], p["destination"], p["hour"]])
+			var plan_desc: String = "My plans for today: %s" % ", ".join(plan_summary)
+			_add_memory_with_embedding(
+				plan_desc, "plan", npc_name, [npc_name] as Array[String],
+				home_building, home_building, 3.0, 0.1
+			)
+
+		if OS.is_debug_build():
+			print("[Planning] %s's plan for today:" % npc_name)
+			for p: Dictionary in _daily_plan:
+				print("  %d:00-%d:00 → %s (%s)" % [p["hour"], p["end_hour"], p["destination"], p["reason"]])
+	)
+
+
+func _generate_fallback_plan() -> void:
+	## Simple deterministic plan when Gemini is unavailable.
+	## Adds 1-2 social visits based on relationships.
+	_last_plan_day = _get_current_day()
+	_daily_plan.clear()
+
+	var friends: Array[String] = Relationships.get_closest_friends(npc_name, 2)
+	if friends.is_empty():
+		return
+
+	# Visit best friend during afternoon break
+	var friend_name: String = friends[0]
+	var friend_workplace: String = _get_npc_workplace(friend_name)
+	if friend_workplace != "" and friend_workplace != workplace_building:
+		_daily_plan.append({
+			"hour": 15,
+			"end_hour": 16,
+			"destination": friend_workplace,
+			"reason": "visit %s" % friend_name,
+			"completed": false,
+		})
+
+	if OS.is_debug_build():
+		print("[Planning] %s — fallback plan: %d items" % [npc_name, _daily_plan.size()])
+
+
+func _get_npc_workplace(target_name: String) -> String:
+	## Look up another NPC's workplace.
+	for npc: Node in get_tree().get_nodes_in_group("npcs"):
+		var other: CharacterBody2D = npc as CharacterBody2D
+		if other.npc_name == target_name:
+			return other.workplace_building
+	return ""
+
+
+func _build_planning_system_prompt() -> String:
+	return "You are %s, a %d-year-old %s in DeepTown. %s\n\nYou are planning your day. Generate 2-4 specific plans beyond your normal routine. Each plan should have a TIME (hour 6-22), a DESTINATION (must be one of the buildings listed below), and a short REASON.\n\nAvailable buildings: Bakery, General Store, Tavern, Church, Sheriff Office, Courthouse, Blacksmith\n\nRules:\n- You work at the %s from roughly 6-15\n- Plans should be for BREAKS or AFTER WORK (during work hours, plan short 1-2 hour visits only)\n- Plans should involve visiting other NPCs, checking on things, or personal goals\n- Be specific about WHO you want to see and WHY\n- Format each plan as: HOUR|DESTINATION|REASON (one per line)\n- Example: 11|Church|Visit Father Aldric to ask about the Sunday service\n- Example: 16|Tavern|Have a drink with Rose and catch up on news\n- Do NOT plan for hours 23-5 (sleep time)\n- Do NOT plan to visit your own workplace during core work hours (you're already there)" % [
+		npc_name, age, job, personality, workplace_building
+	]
+
+
+func _build_planning_context() -> String:
+	var context: String = ""
+
+	# Yesterday's reflections
+	var reflections: Array[Dictionary] = memory.get_by_type("reflection")
+	if not reflections.is_empty():
+		reflections.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
+			return a.get("game_time", 0) > b.get("game_time", 0)
+		)
+		context += "Your recent thoughts:\n"
+		for ref: Dictionary in reflections.slice(0, mini(3, reflections.size())):
+			context += "- %s\n" % ref.get("description", "")
+		context += "\n"
+
+	# Key relationships
+	var all_rels: Dictionary = Relationships.get_all_for(npc_name)
+	if not all_rels.is_empty():
+		context += "Your relationships:\n"
+		for target: String in all_rels:
+			var label: String = Relationships.get_opinion_label(npc_name, target)
+			context += "- You %s %s\n" % [label, target]
+		context += "\n"
+
+	# Recent gossip (what you've heard)
+	var gossip: Array[Dictionary] = memory.get_by_type("gossip")
+	if not gossip.is_empty():
+		gossip.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
+			return a.get("game_time", 0) > b.get("game_time", 0)
+		)
+		context += "Things you've heard recently:\n"
+		for g: Dictionary in gossip.slice(0, mini(3, gossip.size())):
+			context += "- %s\n" % g.get("description", "")
+		context += "\n"
+
+	# Recent notable events
+	var recent: Array[Dictionary] = memory.get_recent(5)
+	if not recent.is_empty():
+		context += "Recent events:\n"
+		for mem: Dictionary in recent:
+			context += "- %s\n" % mem.get("description", "")
+		context += "\n"
+
+	context += "What 2-4 specific things do you want to do today beyond your normal routine? Format: HOUR|DESTINATION|REASON"
+	return context
+
+
+func _parse_plan(text: String) -> Array[Dictionary]:
+	## Parse "HOUR|DESTINATION|REASON" lines from Gemini output.
+	var plans: Array[Dictionary] = []
+	var valid_buildings: Array[String] = [
+		"Bakery", "General Store", "Tavern", "Church",
+		"Sheriff Office", "Courthouse", "Blacksmith",
+	]
+	# Also include all house names as valid destinations
+	for i: int in range(1, 12):
+		valid_buildings.append("House %d" % i)
+
+	var lines: PackedStringArray = text.split("\n")
+	for line: String in lines:
+		var cleaned: String = line.strip_edges()
+		if cleaned == "":
+			continue
+
+		# Remove leading numbering or bullets
+		if cleaned.length() > 2 and cleaned[0].is_valid_int() and (cleaned[1] == '.' or cleaned[1] == ')' or cleaned[1] == ':'):
+			if cleaned[1] != '|':
+				cleaned = cleaned.substr(2).strip_edges()
+
+		var parts: PackedStringArray = cleaned.split("|")
+		if parts.size() < 3:
+			continue
+
+		var hour_str: String = parts[0].strip_edges()
+		var dest: String = parts[1].strip_edges()
+		var reason: String = parts[2].strip_edges()
+
+		# Validate hour
+		var hour: int = hour_str.to_int()
+		if hour < 6 or hour > 22:
+			continue
+
+		# Validate destination — find closest match
+		var matched_dest: String = _match_building_name(dest, valid_buildings)
+		if matched_dest == "":
+			continue
+
+		# Don't plan to go to your own workplace during core work hours
+		if matched_dest == workplace_building and hour >= 6 and hour < 15:
+			continue
+
+		plans.append({
+			"hour": hour,
+			"end_hour": mini(hour + 2, 22),
+			"destination": matched_dest,
+			"reason": reason,
+			"completed": false,
+		})
+
+	# Cap at 4 plans
+	if plans.size() > 4:
+		plans.resize(4)
+
+	# Sort by hour
+	plans.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
+		return a["hour"] < b["hour"]
+	)
+
+	return plans
+
+
+func _match_building_name(input: String, valid_names: Array[String]) -> String:
+	## Fuzzy match building name from Gemini output.
+	var input_lower: String = input.to_lower()
+	for name: String in valid_names:
+		if input_lower == name.to_lower():
+			return name
+		if name.to_lower().contains(input_lower) or input_lower.contains(name.to_lower()):
+			return name
+	return ""
+
+
+func _get_active_plan_destination(hour: int) -> String:
+	## Check if any plan is active for the current hour.
+	## Returns the destination or "" if no active plan.
+	for plan: Dictionary in _daily_plan:
+		if plan["completed"]:
+			continue
+		if hour >= plan["hour"] and hour < plan["end_hour"]:
+			return plan["destination"]
+		# Mark plans as completed if we're past their window
+		if hour >= plan["end_hour"]:
+			plan["completed"] = true
+	return ""
+
+
+func _get_current_plan() -> Dictionary:
+	## Returns the active plan for the current hour, or {}.
+	var hour: int = GameClock.hour
+	for plan: Dictionary in _daily_plan:
+		if plan["completed"]:
+			continue
+		if hour >= plan["hour"] and hour < plan["end_hour"]:
+			return plan
+	return {}
+
+
 func _face_toward(target_pos: Vector2) -> void:
 	## Flip sprite to face toward the target position.
 	if target_pos.x < global_position.x:
@@ -540,6 +804,10 @@ func _on_hour_changed(hour: int) -> void:
 		_update_activity()
 	if OS.is_debug_build():
 		print("[Activity] %s: %s (at %s)" % [npc_name, current_activity, _current_destination])
+
+	# Daily planning — generate plan at dawn
+	if hour == 5 and _last_plan_day != _get_current_day():
+		_generate_daily_plan()
 
 	# Nightly reflection — once per game day at bedtime
 	if hour == 22 and _last_reflection_day != _get_current_day():
@@ -622,6 +890,8 @@ func get_dialogue_response_async(callback: Callable) -> void:
 				"dialogue", PlayerProfile.player_name, [npc_name, PlayerProfile.player_name] as Array[String],
 				_current_destination, _current_destination, 4.0, 0.2
 			)
+			# Player talked to this NPC — builds relationship
+			Relationships.modify(npc_name, PlayerProfile.player_name, 1, 1, 0)
 			callback.call(text)
 		else:
 			callback.call(_get_template_response())
@@ -652,6 +922,8 @@ func get_conversation_reply_async(player_message: String, history: Array[Diction
 				[npc_name, PlayerProfile.player_name] as Array[String],
 				_current_destination, _current_destination, 5.0, 0.3
 			)
+			# Continued conversation builds relationship
+			Relationships.modify(npc_name, PlayerProfile.player_name, 1, 1, 0)
 			callback.call(text)
 		else:
 			callback.call(_get_template_response())
@@ -662,6 +934,16 @@ func _build_system_prompt() -> String:
 	var prompt: String = "You are %s, a %d-year-old %s in the town of DeepTown. %s\n\nYour speech style: %s\n\n" % [
 		npc_name, age, job, personality, speech_style
 	]
+
+	# Add top relationships to identity
+	var friends: Array[String] = Relationships.get_closest_friends(npc_name, 3)
+	if not friends.is_empty():
+		var rel_lines: Array[String] = []
+		for friend: String in friends:
+			var label: String = Relationships.get_opinion_label(npc_name, friend)
+			rel_lines.append("You %s %s" % [label, friend])
+		prompt += "Key relationships: %s.\n\n" % ", ".join(rel_lines)
+
 	prompt += "There is a newcomer in town named %s. They recently moved into House 11 on the south row. They seem curious about the town and its people.\n\n" % PlayerProfile.player_name
 	prompt += "Rules:\n- Respond in character, first person, 1-3 sentences only\n- Never break character or mention being an AI\n- Let your personality shine through every word\n- Reference your memories naturally if relevant\n- Your mood and needs should affect how you talk\n- You can ask %s questions too — be curious about the newcomer\n- React to what they say, don't just give generic responses" % PlayerProfile.player_name
 	return prompt
@@ -691,6 +973,13 @@ func _build_dialogue_context() -> String:
 	context += "- Hunger: %d/100 %s\n" % [int(hunger), "(starving!)" if hunger < 20.0 else "(hungry)" if hunger < 40.0 else "(fine)"]
 	context += "- Energy: %d/100 %s\n" % [int(energy), "(exhausted!)" if energy < 20.0 else "(tired)" if energy < 40.0 else "(fine)"]
 	context += "- Social: %d/100 %s\n\n" % [int(social), "(lonely)" if social < 30.0 else "(could use company)" if social < 50.0 else "(content)"]
+
+	# Relationship with the player
+	var player_rel: Dictionary = Relationships.get_relationship(npc_name, PlayerProfile.player_name)
+	var player_label: String = Relationships.get_opinion_label(npc_name, PlayerProfile.player_name)
+	context += "Your feelings toward %s (the person you're talking to): you %s them. (Trust: %d, Affection: %d, Respect: %d)\n\n" % [
+		PlayerProfile.player_name, player_label, player_rel["trust"], player_rel["affection"], player_rel["respect"]
+	]
 
 	# Include nearby object states for richer context
 	var building_objects: Array[Dictionary] = WorldObjects.get_objects_in_building(_current_destination)
@@ -736,6 +1025,43 @@ func _build_dialogue_context() -> String:
 			env_strs.append(mem.get("description", ""))
 		if not env_strs.is_empty():
 			context += "Things you've noticed around town: %s.\n\n" % ". ".join(env_strs)
+
+	# Gossip the NPC has heard — may come up in conversation
+	var gossip_memories: Array[Dictionary] = memory.get_by_type("gossip")
+	if not gossip_memories.is_empty():
+		gossip_memories.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
+			return a.get("game_time", 0) > b.get("game_time", 0)
+		)
+		var recent_gossip: Array[Dictionary] = gossip_memories.slice(0, mini(2, gossip_memories.size()))
+		context += "Things you've heard from others:\n"
+		for g: Dictionary in recent_gossip:
+			context += "- %s\n" % g.get("description", "")
+		context += "\n"
+
+	# Specifically surface gossip about the player
+	var player_gossip: Array[Dictionary] = []
+	for g: Dictionary in memory.get_by_type("gossip"):
+		if g.get("actor", "") == PlayerProfile.player_name:
+			player_gossip.append(g)
+	if not player_gossip.is_empty():
+		player_gossip.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
+			return a.get("game_time", 0) > b.get("game_time", 0)
+		)
+		context += "You've heard things about this person from others:\n"
+		for pg: Dictionary in player_gossip.slice(0, mini(3, player_gossip.size())):
+			context += "- %s\n" % pg.get("description", "")
+		context += "\n"
+
+	# Today's plans
+	var upcoming_plans: Array[String] = []
+	for plan: Dictionary in _daily_plan:
+		if not plan["completed"]:
+			upcoming_plans.append("At %d:00 — %s at the %s" % [plan["hour"], plan["reason"], plan["destination"]])
+	if not upcoming_plans.is_empty():
+		context += "Your plans for today:\n"
+		for p: String in upcoming_plans:
+			context += "- %s\n" % p
+		context += "\n"
 
 	context += "%s is standing in front of you and wants to talk. They recently moved to DeepTown and live in House 11. Respond naturally." % PlayerProfile.player_name
 	return context
@@ -859,13 +1185,20 @@ func _update_destination(hour: int) -> void:
 
 func _get_schedule_destination(hour: int) -> String:
 	## Needs-driven scheduling with personality-based flexibility.
-	# Emergency overrides
+	## NOW INCLUDES: daily plan overrides.
+
+	# Emergency overrides (ALWAYS highest priority)
 	if hunger < 20.0 or energy < 20.0:
 		return home_building
 
-	# Sleep time — everyone goes home
+	# Sleep time — everyone goes home (ALWAYS)
 	if hour >= 23 or hour < 5:
 		return home_building
+
+	# --- CHECK DAILY PLAN ---
+	var plan_dest: String = _get_active_plan_destination(hour)
+	if plan_dest != "":
+		return plan_dest
 
 	# Morning wake-up (5-6) — head to work
 	if hour >= 5 and hour < 6:
@@ -979,6 +1312,17 @@ func _fake_npc_conversation(other_npc: CharacterBody2D) -> void:
 		"dialogue", npc_name, [other_npc.npc_name, npc_name] as Array[String],
 		_current_destination, _current_destination, 3.0, 0.2
 	)
+	# Conversation builds trust and affection
+	Relationships.modify_mutual(npc_name, other_name, 1, 1, 0)
+
+	# Gossip phase — both NPCs may share something
+	var gossip_mem: Dictionary = _pick_gossip_for(other_npc)
+	if not gossip_mem.is_empty():
+		_share_gossip_with(other_npc, gossip_mem)
+	var reverse_gossip: Dictionary = other_npc._pick_gossip_for(self)
+	if not reverse_gossip.is_empty():
+		other_npc._share_gossip_with(self, reverse_gossip)
+
 	print("[%s] Chatted with %s about %s (template)" % [npc_name, other_name, topic])
 
 
@@ -1029,6 +1373,9 @@ func _real_npc_conversation(other_npc: CharacterBody2D) -> void:
 				_current_destination, _current_destination, 4.0, 0.2
 			)
 
+			# Conversation builds trust and affection
+			Relationships.modify_mutual(npc_name, other_name, 1, 1, 0)
+
 			# Show speech bubbles
 			_show_speech_bubble(my_line)
 			get_tree().create_timer(2.0).timeout.connect(func() -> void:
@@ -1042,6 +1389,17 @@ func _real_npc_conversation(other_npc: CharacterBody2D) -> void:
 				npc_name, other_name, _current_destination,
 				GeminiClient._request_queue.size(), GeminiClient.total_requests
 			])
+
+			# Gossip phase — initiator may share something interesting
+			var gossip_mem: Dictionary = _pick_gossip_for(other_npc)
+			if not gossip_mem.is_empty():
+				_share_gossip_with(other_npc, gossip_mem)
+
+			# Responder may also gossip back
+			if is_instance_valid(other_npc):
+				var reverse_gossip: Dictionary = other_npc._pick_gossip_for(self)
+				if not reverse_gossip.is_empty():
+					other_npc._share_gossip_with(self, reverse_gossip)
 		)
 	)
 
@@ -1072,6 +1430,22 @@ func _pick_conversation_topic(other_npc: CharacterBody2D) -> String:
 			topics.append("the newcomer %s" % PlayerProfile.player_name)
 			break
 
+	# Gossip-based topics
+	var gossip_mems: Array[Dictionary] = memory.get_by_type("gossip")
+	if not gossip_mems.is_empty():
+		var latest_gossip: Dictionary = gossip_mems[-1]
+		var gossip_about: String = latest_gossip.get("actor", "")
+		if gossip_about != "" and gossip_about != other_npc.npc_name:
+			topics.append("what they heard about %s" % gossip_about)
+
+	# If I have interesting player observations, share them
+	var player_mems: Array[Dictionary] = memory.get_memories_about(PlayerProfile.player_name)
+	if not player_mems.is_empty():
+		var latest: Dictionary = player_mems[-1]
+		var hours_since: float = (GameClock.total_minutes - latest.get("game_time", 0)) / 60.0
+		if hours_since < 24:
+			topics.append("the newcomer %s" % PlayerProfile.player_name)
+
 	# Random flavor
 	topics.append_array(["the weather", "town gossip", "old times", "their families"])
 
@@ -1097,6 +1471,18 @@ func _build_npc_chat_context(other_npc: CharacterBody2D, topic: String, their_li
 		context += "You are currently %s. " % current_activity
 	if other_npc.current_activity != "":
 		context += "%s is currently %s. " % [other_npc.npc_name, other_npc.current_activity]
+
+	# Current plan context
+	var current_plan: Dictionary = _get_current_plan()
+	if not current_plan.is_empty():
+		context += "You're here because you planned to: %s. " % current_plan.get("reason", "visit")
+
+	# Relationship with conversation partner
+	var rel: Dictionary = Relationships.get_relationship(npc_name, other_npc.npc_name)
+	var rel_label: String = Relationships.get_opinion_label(npc_name, other_npc.npc_name)
+	context += "You %s %s. (Trust: %d, Affection: %d, Respect: %d) " % [
+		rel_label, other_npc.npc_name, rel["trust"], rel["affection"], rel["respect"]
+	]
 
 	# Your current state
 	if hunger < 40.0:
@@ -1132,6 +1518,18 @@ func _build_npc_chat_context(other_npc: CharacterBody2D, topic: String, their_li
 		var hours_ago: int = (GameClock.total_minutes - latest_env.get("game_time", 0)) / 60
 		if hours_ago < 6:
 			context += "Earlier you noticed: %s. " % latest_env.get("description", "")
+
+	# Gossip awareness — things you've heard about people
+	var gossip_memories: Array[Dictionary] = memory.get_by_type("gossip")
+	if not gossip_memories.is_empty():
+		gossip_memories.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
+			return a.get("game_time", 0) > b.get("game_time", 0)
+		)
+		var recent_gossip: Array[Dictionary] = gossip_memories.slice(0, mini(2, gossip_memories.size()))
+		var gossip_strs: Array[String] = []
+		for g: Dictionary in recent_gossip:
+			gossip_strs.append(g.get("description", ""))
+		context += "Things you've heard recently: %s. " % ". ".join(gossip_strs)
 
 	# The conversation setup
 	if their_line == "":
@@ -1373,3 +1771,145 @@ func _is_work_hours() -> bool:
 func _is_workplace_object(tile_type: String) -> bool:
 	## Is this the kind of object that should be in use during work hours?
 	return tile_type in ["oven", "anvil", "counter", "desk", "altar"]
+
+
+# --- Gossip System ---
+
+const GOSSIP_TRUST_THRESHOLD: float = 15.0  # Minimum trust to share gossip
+const GOSSIP_CHANCE: float = 0.4             # 40% chance of gossiping per conversation
+const GOSSIP_MIN_IMPORTANCE: float = 3.0     # Only share important-ish memories
+const GOSSIP_MAX_AGE_HOURS: int = 48         # Don't share ancient news
+const GOSSIP_MAX_HOPS: int = 3               # Max propagation depth
+
+
+func _pick_gossip_for(other_npc: CharacterBody2D) -> Dictionary:
+	## Select an interesting memory to share with another NPC.
+	## Returns the memory Dictionary, or {} if nothing worth sharing.
+
+	# Trust check — don't gossip with people you don't trust
+	var trust: int = Relationships.get_relationship(npc_name, other_npc.npc_name)["trust"]
+	if trust < GOSSIP_TRUST_THRESHOLD:
+		return {}
+
+	# Random chance — not every conversation includes gossip
+	if randf() > GOSSIP_CHANCE:
+		return {}
+
+	# Gather candidate memories: recent, important, about THIRD PARTIES
+	var candidates: Array[Dictionary] = []
+	var current_time: int = GameClock.total_minutes
+
+	for mem: Dictionary in memory.memories:
+		# Must be recent enough
+		var hours_ago: float = (current_time - mem.get("game_time", 0)) / 60.0
+		if hours_ago > GOSSIP_MAX_AGE_HOURS:
+			continue
+
+		# Must be important enough
+		if mem.get("importance", 0.0) < GOSSIP_MIN_IMPORTANCE:
+			continue
+
+		# Must be about someone other than the conversation partner or self
+		var actor: String = mem.get("actor", "")
+		if actor == other_npc.npc_name or actor == npc_name or actor == "":
+			continue
+
+		# Don't re-share gossip that originally came from this NPC
+		var source: String = mem.get("gossip_source", "")
+		if source == other_npc.npc_name:
+			continue
+
+		# Don't share memories that the other NPC was a participant in
+		var participants: Array = mem.get("participants", [])
+		if other_npc.npc_name in participants:
+			continue
+
+		# Prefer certain types
+		var type: String = mem.get("type", "")
+		if type in ["observation", "dialogue", "environment", "reflection", "gossip"]:
+			candidates.append(mem)
+
+	if candidates.is_empty():
+		return {}
+
+	# Sort by importance * recency — share the juiciest recent thing
+	candidates.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
+		var score_a: float = a.get("importance", 0.0) * pow(0.98, (current_time - a.get("game_time", 0)) / 60.0)
+		var score_b: float = b.get("importance", 0.0) * pow(0.98, (current_time - b.get("game_time", 0)) / 60.0)
+		return score_a > score_b
+	)
+
+	return candidates[0]
+
+
+func _share_gossip_with(receiver_npc: CharacterBody2D, original_memory: Dictionary) -> void:
+	## Share a memory with another NPC as gossip.
+	## The receiver gets a new memory with reduced importance and gossip tracking.
+
+	var original_desc: String = original_memory.get("description", "")
+	var about: String = original_memory.get("actor", "someone")
+
+	# Track how many hops this gossip has traveled
+	var hop_count: int = original_memory.get("gossip_hops", 0) + 1
+
+	# Don't propagate beyond max hops
+	if hop_count > GOSSIP_MAX_HOPS:
+		return
+
+	# Format depends on whether this is first-hand or already gossip
+	var gossip_desc: String = ""
+	if hop_count == 1:
+		# First-hand sharing
+		gossip_desc = "%s told me: %s" % [npc_name, original_desc]
+	else:
+		# Second-hand+
+		gossip_desc = "%s mentioned that they heard: %s" % [npc_name, original_desc]
+
+	# Importance degrades with each hop (gossip is less reliable)
+	var gossip_importance: float = maxf(original_memory.get("importance", 3.0) - (hop_count * 1.0), 2.0)
+
+	# Create the gossip memory for the receiver
+	receiver_npc._add_memory_with_embedding(
+		gossip_desc,
+		"gossip",
+		about,
+		[npc_name, receiver_npc.npc_name, about] as Array[String],
+		receiver_npc._current_destination,
+		_current_destination,
+		gossip_importance,
+		original_memory.get("emotional_valence", 0.0)
+	)
+
+	# Tag the receiver's new gossip memory with tracking metadata
+	if not receiver_npc.memory.memories.is_empty():
+		var new_mem: Dictionary = receiver_npc.memory.memories[-1]
+		new_mem["gossip_source"] = npc_name
+		new_mem["gossip_hops"] = hop_count
+		new_mem["original_description"] = original_desc
+
+	# Create a memory for the SHARER that they told someone
+	_add_memory_with_embedding(
+		"Told %s about %s" % [receiver_npc.npc_name, original_desc.left(60)],
+		"gossip_shared",
+		receiver_npc.npc_name,
+		[npc_name, receiver_npc.npc_name] as Array[String],
+		_current_destination, _current_destination,
+		2.0, 0.0
+	)
+
+	# Sharing gossip builds trust slightly (intimacy of shared secrets)
+	Relationships.modify_mutual(npc_name, receiver_npc.npc_name, 1, 0, 0)
+
+	# Gossip affects receiver's opinion of the subject
+	var valence: float = original_memory.get("emotional_valence", 0.0)
+	if about != "" and about != receiver_npc.npc_name:
+		if valence < -0.2:
+			# Negative gossip — reduces trust/affection toward the subject
+			Relationships.modify(receiver_npc.npc_name, about, -2, -1, -1)
+		elif valence > 0.2:
+			# Positive gossip — slightly increases opinion of the subject
+			Relationships.modify(receiver_npc.npc_name, about, 1, 1, 0)
+
+	if OS.is_debug_build():
+		print("[Gossip] %s told %s: '%s' (hop %d, importance %.1f)" % [
+			npc_name, receiver_npc.npc_name, gossip_desc.left(80), hop_count, gossip_importance])
