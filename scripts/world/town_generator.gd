@@ -70,9 +70,20 @@ var _tile_set: TileSet
 # AStarGrid2D for NPC pathfinding — replaces broken NavigationServer2D approach
 var _astar: AStarGrid2D
 
+# Door open/close visual system
+var _door_closed_tex: Texture2D = null
+var _door_open_tex: Texture2D = null
+var _door_positions: Dictionary = {}   # {Vector2i: building_name}
+var _door_sprites: Dictionary = {}     # {Vector2i: Sprite2D}
+var _door_check_counter: int = 0
+
 
 func _ready() -> void:
 	_tile_set = _create_tileset()
+
+	# Load door textures for proximity-based open/close
+	_door_closed_tex = load("res://assets/sprites/tiles/door.png")
+	_door_open_tex = load("res://assets/sprites/tiles/door_open.png")
 
 	_ground_layer = TileMapLayer.new()
 	_ground_layer.name = "GroundLayer"
@@ -95,8 +106,10 @@ func _ready() -> void:
 	_place_buildings()
 	_decorate_buildings()
 	_place_furniture()
+	_register_furniture_objects()
 	_place_water()
 	_render_map()
+	_init_door_sprites()
 	_build_astar()
 	_add_building_labels()
 	_add_map_boundary()
@@ -269,6 +282,7 @@ func _place_buildings() -> void:
 		# Door at bottom center
 		var door_x: int = gx + w / 2
 		_set_tile(door_x, gy + h - 1, Tile.DOOR)
+		_door_positions[Vector2i(door_x, gy + h - 1)] = bld["name"]
 
 
 func _decorate_buildings() -> void:
@@ -391,6 +405,60 @@ func _place_furniture() -> void:
 			print("[Furniture] %s: %d walkable tiles" % [bld_name, counts[bld_name].size()])
 
 
+func _register_furniture_objects() -> void:
+	## Scans all buildings and registers placed furniture tiles with WorldObjects.
+	var tile_type_names: Dictionary = {
+		Tile.BED: "bed", Tile.TABLE: "table", Tile.COUNTER: "counter",
+		Tile.OVEN: "oven", Tile.ANVIL: "anvil", Tile.PEW: "pew",
+		Tile.ALTAR: "altar", Tile.BARREL: "barrel", Tile.SHELF: "shelf",
+		Tile.DESK: "desk",
+	}
+
+	for bld: Dictionary in _buildings:
+		var bld_name: String = bld["name"]
+		var gx: int = bld["gx"]
+		var gy: int = bld["gy"]
+		var w: int = bld["w"]
+		var h: int = bld["h"]
+		var type_counts: Dictionary = {}
+
+		for y: int in range(gy + 1, gy + h - 1):
+			for x: int in range(gx + 1, gx + w - 1):
+				var tile_id: int = _map[y][x]
+				if tile_type_names.has(tile_id):
+					var type_name: String = tile_type_names[tile_id]
+					var count: int = type_counts.get(type_name, 0)
+					type_counts[type_name] = count + 1
+					var object_id: String = "%s:%s:%d" % [bld_name, type_name, count]
+					WorldObjects.register_object(object_id, bld_name, type_name, Vector2i(x, y))
+
+	if OS.is_debug_build():
+		print("[TownMap] Registered %d furniture objects with WorldObjects" % WorldObjects._objects.size())
+
+
+func get_furniture_adjacent_tile(grid_pos: Vector2i) -> Vector2:
+	## Returns the world position of the best walkable tile adjacent to a furniture tile.
+	## Priority: south (in front), east, west, north.
+	var offsets: Array[Vector2i] = [
+		Vector2i(0, 1), Vector2i(1, 0), Vector2i(-1, 0), Vector2i(0, -1),
+	]
+	for offset: Vector2i in offsets:
+		var check: Vector2i = grid_pos + offset
+		if check.x < 0 or check.x >= MAP_WIDTH or check.y < 0 or check.y >= MAP_HEIGHT:
+			continue
+		var tile_id: int = _map[check.y][check.x]
+		if tile_id == Tile.FLOOR or tile_id == Tile.DOOR:
+			return Vector2(
+				check.x * TILE_SIZE + TILE_SIZE / 2.0,
+				check.y * TILE_SIZE + TILE_SIZE / 2.0
+			)
+	# Fallback: south of furniture
+	return Vector2(
+		grid_pos.x * TILE_SIZE + TILE_SIZE / 2.0,
+		(grid_pos.y + 1) * TILE_SIZE + TILE_SIZE / 2.0
+	)
+
+
 func _place_water() -> void:
 	for y: int in range(36, 42):
 		for x: int in range(46, 55):
@@ -443,6 +511,54 @@ func _render_map() -> void:
 			var data: TileData = _building_layer.get_cell_tile_data(Vector2i(x, gy))
 			if data:
 				data.modulate = tint
+
+
+func _init_door_sprites() -> void:
+	## Create Sprite2D overlays for each door tile (covers the tilemap door).
+	for grid_pos: Vector2i in _door_positions:
+		var spr := Sprite2D.new()
+		spr.position = Vector2(
+			grid_pos.x * TILE_SIZE + TILE_SIZE / 2.0,
+			grid_pos.y * TILE_SIZE + TILE_SIZE / 2.0
+		)
+		spr.z_index = 5  # Above ground tiles, below NPCs
+		spr.texture = _door_closed_tex
+		add_child(spr)
+		_door_sprites[grid_pos] = spr
+	print("[TownMap] Created %d door overlays" % _door_sprites.size())
+
+
+func _process(_delta: float) -> void:
+	_door_check_counter += 1
+	if _door_check_counter % 5 == 0:
+		_update_doors()
+
+
+func _update_doors() -> void:
+	## Check all door positions and swap sprite based on proximity.
+	var bodies: Array[Node] = []
+	bodies.append_array(get_tree().get_nodes_in_group("npcs"))
+	bodies.append_array(get_tree().get_nodes_in_group("player"))
+
+	var threshold: float = TILE_SIZE * 1.8
+
+	for door_grid: Vector2i in _door_positions:
+		var door_world := Vector2(
+			door_grid.x * TILE_SIZE + TILE_SIZE / 2.0,
+			door_grid.y * TILE_SIZE + TILE_SIZE / 2.0
+		)
+
+		var anyone_near: bool = false
+		for body: Node in bodies:
+			if body is CharacterBody2D:
+				if body.global_position.distance_to(door_world) < threshold:
+					anyone_near = true
+					break
+
+		var spr: Sprite2D = _door_sprites[door_grid]
+		var target_tex: Texture2D = _door_open_tex if anyone_near else _door_closed_tex
+		if spr.texture != target_tex:
+			spr.texture = target_tex
 
 
 func _build_astar() -> void:

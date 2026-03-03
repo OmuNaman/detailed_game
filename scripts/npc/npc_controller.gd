@@ -36,12 +36,56 @@ const CONVERSATION_COOLDOWN: int = 120  # 2 game hours between conversations wit
 # Random visit tracking
 var _next_visit_check: int = 0
 
+# Job-to-furniture mappings
+const JOB_WORK_OBJECTS: Dictionary = {
+	"Baker": "oven",
+	"Shopkeeper": "counter",
+	"Sheriff": "desk",
+	"Priest": "altar",
+	"Blacksmith": "anvil",
+	"Tavern Owner": "counter",
+	"Farmer": "counter",
+	"Herbalist": "pew",
+	"Retired": "table",
+	"Apprentice Blacksmith": "anvil",
+	"Scholar": "desk",
+}
+
+const JOB_OBJECT_STATES: Dictionary = {
+	"Baker": "baking",
+	"Shopkeeper": "serving customers",
+	"Sheriff": "on duty",
+	"Priest": "conducting service",
+	"Blacksmith": "forging",
+	"Tavern Owner": "serving drinks",
+	"Farmer": "delivering produce",
+	"Herbalist": "preparing remedies",
+	"Retired": "occupied",
+	"Apprentice Blacksmith": "forging",
+	"Scholar": "studying records",
+}
+
 # A* waypoint following
 var _path: PackedVector2Array = PackedVector2Array()
 var _path_index: int = 0
 var _is_moving: bool = false
 var _astar: AStarGrid2D = null
 var _town_map: Node2D = null
+var _current_object_id: String = ""  # WorldObjects ID of furniture in use
+var current_activity: String = ""    # Human-readable: "kneading dough at the oven"
+var _activity_emoji: String = ""     # Simple symbol above head
+var _activity_label: Label = null
+var _awake_texture: Texture2D = null
+var _sleep_texture: Texture2D = null
+var _is_visually_sleeping: bool = false
+
+# Reflection system
+var _last_reflection_day: int = -1   # Monotonic day counter when we last reflected
+var _reflection_cooldown: bool = false  # Prevent double-triggers
+
+# Environment perception
+var _last_environment_scan: int = -120  # Start cold so first scan triggers
+const ENVIRONMENT_SCAN_INTERVAL: int = 30  # Every 30 game minutes
 
 @onready var sprite: Sprite2D = $Sprite2D
 @onready var name_label: Label = $NameLabel
@@ -68,11 +112,30 @@ func _ready() -> void:
 		var tex: Texture2D = load(sprite_path)
 		if tex:
 			sprite.texture = tex
+	_awake_texture = sprite.texture
+
+	# Load sleeping variant (same path but _sleep instead of _down)
+	var sleep_path: String = sprite_path.replace("_down.png", "_sleep.png")
+	if ResourceLoader.exists(sleep_path):
+		_sleep_texture = load(sleep_path)
+
 	name_label.text = npc_name
 
 	EventBus.time_hour_changed.connect(_on_hour_changed)
 	EventBus.time_tick.connect(_on_time_tick)
 	$PerceptionArea.body_entered.connect(_on_perception_body_entered)
+
+	# Activity label (floating emoji above sprite)
+	_activity_label = Label.new()
+	_activity_label.name = "ActivityLabel"
+	_activity_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_activity_label.position = Vector2(-64, -42)
+	_activity_label.custom_minimum_size = Vector2(128, 0)
+	_activity_label.add_theme_font_size_override("font_size", 8)
+	_activity_label.add_theme_color_override("font_color", Color(1.0, 1.0, 1.0, 0.7))
+	_activity_label.add_theme_color_override("font_outline_color", Color(0, 0, 0, 0.8))
+	_activity_label.add_theme_constant_override("outline_size", 2)
+	add_child(_activity_label)
 
 	# Wait one frame for the scene tree to be fully built, then grab the A* grid
 	await get_tree().process_frame
@@ -129,6 +192,334 @@ func _arrive() -> void:
 	_is_moving = false
 	_path = PackedVector2Array()
 	velocity = Vector2.ZERO
+	_claim_work_object()
+	_update_activity()
+	_on_arrive_at_building()
+
+
+func _claim_work_object() -> void:
+	## Find and claim the appropriate furniture object at the current building.
+	_release_current_object()
+
+	var target_type: String = _get_target_furniture_type(_current_destination)
+	if target_type == "":
+		return
+
+	var obj_id: String = WorldObjects.find_object_for_npc(_current_destination, target_type, npc_name)
+	if obj_id == "":
+		return
+
+	_current_object_id = obj_id
+
+	var state_str: String = "in use"
+	if _current_destination == workplace_building:
+		state_str = JOB_OBJECT_STATES.get(job, "in use")
+	elif target_type == "bed":
+		state_str = "occupied"
+	elif target_type == "table":
+		state_str = "dining"
+	elif target_type == "pew":
+		state_str = "occupied"
+
+	WorldObjects.set_state(obj_id, state_str, npc_name)
+
+
+func _release_current_object() -> void:
+	## Release whatever object we're currently using.
+	if _current_object_id != "":
+		WorldObjects.release_object(_current_object_id)
+		_current_object_id = ""
+
+
+func _get_target_furniture_type(destination: String) -> String:
+	## What furniture should the NPC go to at this destination?
+	if destination == workplace_building:
+		return JOB_WORK_OBJECTS.get(job, "")
+	if destination == home_building:
+		if GameClock.hour >= 22 or GameClock.hour < 6:
+			return "bed"
+		if GameClock.hour in [7, 12, 19]:
+			return "table"
+	if destination == "Tavern" and destination != workplace_building:
+		return "table"
+	if destination == "Church" and destination != workplace_building:
+		return "pew"
+	return ""
+
+
+func _update_activity() -> void:
+	## Recompute current_activity based on location, time, object, and needs.
+	if _is_moving:
+		current_activity = "walking to the %s" % _current_destination
+		_activity_emoji = "..."
+		_update_activity_label()
+		return
+
+	if _current_destination == "":
+		current_activity = "standing around"
+		_activity_emoji = "..."
+		_update_activity_label()
+		return
+
+	var hour: int = GameClock.hour
+
+	# At home
+	if _current_destination == home_building:
+		if hour >= 22 or hour < 5:
+			current_activity = "sleeping in bed"
+			_activity_emoji = "Zzz"
+		elif hour >= 5 and hour < 6:
+			current_activity = "getting ready for the day"
+			_activity_emoji = "!"
+		elif hour in [7, 12, 19]:
+			current_activity = "eating a meal at the table"
+			_activity_emoji = "~"
+		else:
+			current_activity = "resting at home"
+			_activity_emoji = "~"
+		_update_activity_label()
+		return
+
+	# At workplace
+	if _current_destination == workplace_building:
+		current_activity = _get_work_activity()
+		_activity_emoji = _get_work_emoji()
+		_update_activity_label()
+		return
+
+	# At Tavern (socializing)
+	if _current_destination == "Tavern" and _current_destination != workplace_building:
+		if hour >= 17:
+			current_activity = "having drinks at the Tavern"
+		else:
+			current_activity = "relaxing at the Tavern"
+		_activity_emoji = "~"
+		_update_activity_label()
+		return
+
+	# Visiting Church
+	if _current_destination == "Church" and _current_destination != workplace_building:
+		current_activity = "praying quietly in the Church"
+		_activity_emoji = "..."
+		_update_activity_label()
+		return
+
+	# Fallback
+	current_activity = "at the %s" % _current_destination
+	_activity_emoji = "..."
+	_update_activity_label()
+
+
+func _get_work_activity() -> String:
+	## Returns a specific activity string based on job and time of day.
+	match job:
+		"Baker":
+			if GameClock.hour < 10:
+				return "kneading dough at the oven"
+			elif GameClock.hour < 14:
+				return "baking bread in the oven"
+			else:
+				return "serving fresh bread at the counter"
+		"Shopkeeper":
+			if GameClock.hour < 9:
+				return "opening up the General Store"
+			else:
+				return "minding the shop at the counter"
+		"Sheriff":
+			if GameClock.hour < 10:
+				return "reviewing reports at the desk"
+			else:
+				return "keeping watch from the Sheriff Office"
+		"Priest":
+			if GameClock.hour < 9:
+				return "preparing the morning service at the altar"
+			elif GameClock.hour < 12:
+				return "conducting the morning service"
+			else:
+				return "tending to the Church"
+		"Blacksmith":
+			return "hammering metal at the anvil"
+		"Tavern Owner":
+			if GameClock.hour < 15:
+				return "cleaning up the Tavern"
+			else:
+				return "serving drinks at the counter"
+		"Farmer":
+			if GameClock.hour < 10:
+				return "delivering produce to the General Store"
+			else:
+				return "stocking shelves at the General Store"
+		"Herbalist":
+			return "preparing herbal remedies in the Church"
+		"Retired":
+			return "nursing a drink at the Tavern"
+		"Apprentice Blacksmith":
+			if GameClock.hour < 12:
+				return "learning to forge at the anvil"
+			else:
+				return "practicing hammer work at the anvil"
+		"Scholar":
+			if GameClock.hour < 12:
+				return "studying old records at the desk"
+			else:
+				return "writing in the town ledger at the desk"
+	return "working at the %s" % workplace_building
+
+
+func _get_work_emoji() -> String:
+	match job:
+		"Baker": return "*"
+		"Shopkeeper": return "$"
+		"Sheriff": return "!"
+		"Priest": return "+"
+		"Blacksmith": return "#"
+		"Tavern Owner": return "~"
+		"Farmer": return "%"
+		"Herbalist": return "&"
+		"Retired": return "~"
+		"Apprentice Blacksmith": return "#"
+		"Scholar": return "?"
+	return "..."
+
+
+func _update_activity_label() -> void:
+	if _activity_label:
+		_activity_label.text = _activity_emoji
+	_update_visual_state()
+
+
+func _update_visual_state() -> void:
+	## Swap sprite texture based on current activity (sleeping/working/idle).
+	var should_sleep: bool = current_activity == "sleeping in bed"
+
+	if should_sleep and not _is_visually_sleeping and _sleep_texture:
+		sprite.texture = _sleep_texture
+		sprite.modulate = Color(0.7, 0.7, 0.9, 1.0)  # Slight blue tint when sleeping
+		_is_visually_sleeping = true
+	elif not should_sleep and _is_visually_sleeping and _awake_texture:
+		sprite.texture = _awake_texture
+		sprite.modulate = Color.WHITE
+		_is_visually_sleeping = false
+
+	# Subtle work tint when actively using a furniture object
+	if not _is_visually_sleeping:
+		if _current_object_id != "" and not _is_moving:
+			sprite.modulate = Color(1.0, 0.97, 0.93, 1.0)
+		else:
+			sprite.modulate = Color.WHITE
+
+
+func _get_current_day() -> int:
+	## Monotonic day counter (doesn't reset on season change unlike GameClock.day).
+	return GameClock.total_minutes / 1440
+
+
+func _try_reflect() -> void:
+	## Generate 2-3 higher-level insights from recent memories via Gemini.
+	if _reflection_cooldown:
+		return
+	if not GeminiClient.has_api_key():
+		return
+
+	var current_day: int = _get_current_day()
+	_last_reflection_day = current_day
+	_reflection_cooldown = true
+
+	var recent: Array[Dictionary] = memory.get_recent(20)
+	if recent.size() < 5:
+		_reflection_cooldown = false
+		return
+
+	var system_prompt: String = _build_reflection_system_prompt()
+	var user_message: String = _build_reflection_context(recent)
+
+	GeminiClient.generate(system_prompt, user_message, func(text: String, success: bool) -> void:
+		_reflection_cooldown = false
+
+		if not success or text == "":
+			print("[Reflection] %s — Gemini failed, skipping reflection" % npc_name)
+			return
+
+		var insights: Array[String] = _parse_reflections(text)
+
+		for insight: String in insights:
+			if insight.strip_edges() == "":
+				continue
+			_add_memory_with_embedding(
+				insight,
+				"reflection",
+				npc_name,
+				[npc_name] as Array[String],
+				_current_destination,
+				_current_destination,
+				8.0,
+				0.0
+			)
+
+		print("[Reflection] %s generated %d insights" % [npc_name, insights.size()])
+		if OS.is_debug_build():
+			for ins: String in insights:
+				print("  - %s" % ins)
+	)
+
+
+func _build_reflection_system_prompt() -> String:
+	return "You are %s, a %d-year-old %s in DeepTown. %s\n\nYou are reflecting on your recent experiences before going to sleep. Generate exactly 3 higher-level insights — things you've realized, patterns you've noticed, or feelings that have been growing. These should be personal realizations, not just summaries of events.\n\nRules:\n- Write in first person as %s\n- Each insight should be 1 sentence\n- Focus on relationships, patterns, emotions, or realizations\n- Reference specific people or events from your memories\n- Number them 1, 2, 3\n- Do NOT just repeat the memories — synthesize meaning from them" % [
+		npc_name, age, job, personality, npc_name
+	]
+
+
+func _build_reflection_context(recent_memories: Array[Dictionary]) -> String:
+	var context: String = "Here are your recent experiences from today and the past few days:\n\n"
+
+	for i: int in range(recent_memories.size()):
+		var mem: Dictionary = recent_memories[i]
+		var hours_ago: int = maxi((GameClock.total_minutes - mem.get("game_time", 0)) / 60, 0)
+		var time_str: String = ""
+		if hours_ago < 1:
+			time_str = "just now"
+		elif hours_ago < 24:
+			time_str = "%d hours ago" % hours_ago
+		else:
+			time_str = "%d days ago" % (hours_ago / 24)
+
+		var type_str: String = mem.get("type", "")
+		if type_str == "reflection":
+			context += "- [previous reflection, %s] %s\n" % [time_str, mem.get("description", "")]
+		else:
+			context += "- [%s] %s\n" % [time_str, mem.get("description", "")]
+
+	context += "\nWhat 3 insights or realizations do you draw from these experiences? Number them 1, 2, 3."
+	return context
+
+
+func _parse_reflections(text: String) -> Array[String]:
+	## Extract numbered insights from Gemini response.
+	var results: Array[String] = []
+	var lines: PackedStringArray = text.split("\n")
+
+	for line: String in lines:
+		var cleaned: String = line.strip_edges()
+		if cleaned == "":
+			continue
+
+		# Remove numbering: "1. ", "2) ", "1: ", etc.
+		var stripped: String = cleaned
+		if cleaned.length() > 2:
+			if cleaned[0].is_valid_int() and (cleaned[1] == '.' or cleaned[1] == ')' or cleaned[1] == ':'):
+				stripped = cleaned.substr(2).strip_edges()
+			elif cleaned.length() > 3 and cleaned[0].is_valid_int() and cleaned[1].is_valid_int():
+				var dot_pos: int = cleaned.find(".")
+				if dot_pos > 0 and dot_pos < 4:
+					stripped = cleaned.substr(dot_pos + 1).strip_edges()
+
+		if stripped.length() > 10:
+			results.append(stripped)
+
+	if results.size() > 3:
+		results.resize(3)
+
+	return results
 
 
 func _face_toward(target_pos: Vector2) -> void:
@@ -144,6 +535,15 @@ func _on_hour_changed(hour: int) -> void:
 	if _current_destination == home_building and hour in [7, 12, 19]:
 		hunger = minf(hunger + 30.0, 100.0)
 	_update_destination(hour)
+	# Activities change by time of day even without destination change
+	if not _is_moving:
+		_update_activity()
+	if OS.is_debug_build():
+		print("[Activity] %s: %s (at %s)" % [npc_name, current_activity, _current_destination])
+
+	# Nightly reflection — once per game day at bedtime
+	if hour == 22 and _last_reflection_day != _get_current_day():
+		_try_reflect()
 
 
 func _on_time_tick(_game_minute: int) -> void:
@@ -177,6 +577,16 @@ func _on_time_tick(_game_minute: int) -> void:
 	# Periodic perception scan every 30 game minutes (fix for already-overlapping bodies)
 	if GameClock.total_minutes % 30 == 0:
 		_scan_perception_area()
+		_scan_environment()
+
+	# Mid-day reflection trigger: if lots of important events happened today
+	if GameClock.total_minutes % 30 == 15:
+		var current_day: int = _get_current_day()
+		if _last_reflection_day != current_day:
+			var last_reflection_time: int = _last_reflection_day * 1440
+			var importance_sum: float = memory.get_importance_sum_since(last_reflection_time)
+			if importance_sum > 100.0:
+				_try_reflect()
 
 
 func get_mood() -> float:
@@ -272,14 +682,25 @@ func _build_dialogue_context() -> String:
 	var mood: float = get_mood()
 	var mood_desc: String = "miserable" if mood < 20.0 else "unhappy" if mood < 40.0 else "okay" if mood < 60.0 else "good" if mood < 80.0 else "great"
 
-	var context: String = "Current situation: It is %s (%s). You are at the %s. Your mood is %s (%d/100).\n\n" % [
-		GameClock.get_time_string(), period, _current_destination, mood_desc, int(mood)
+	var activity_str: String = current_activity if current_activity != "" else "standing around"
+	var context: String = "Current situation: It is %s (%s). You are at the %s. You are currently %s. Your mood is %s (%d/100).\n\n" % [
+		GameClock.get_time_string(), period, _current_destination, activity_str, mood_desc, int(mood)
 	]
 
 	context += "Your needs:\n"
 	context += "- Hunger: %d/100 %s\n" % [int(hunger), "(starving!)" if hunger < 20.0 else "(hungry)" if hunger < 40.0 else "(fine)"]
 	context += "- Energy: %d/100 %s\n" % [int(energy), "(exhausted!)" if energy < 20.0 else "(tired)" if energy < 40.0 else "(fine)"]
 	context += "- Social: %d/100 %s\n\n" % [int(social), "(lonely)" if social < 30.0 else "(could use company)" if social < 50.0 else "(content)"]
+
+	# Include nearby object states for richer context
+	var building_objects: Array[Dictionary] = WorldObjects.get_objects_in_building(_current_destination)
+	if not building_objects.is_empty():
+		var active_objects: Array[String] = []
+		for obj: Dictionary in building_objects:
+			if obj["state"] != "idle":
+				active_objects.append("the %s is %s" % [obj["tile_type"], obj["state"]])
+		if not active_objects.is_empty():
+			context += "Around you: %s.\n\n" % ", ".join(active_objects)
 
 	# Retrieve top 5 recent memories
 	var recent_memories: Array[Dictionary] = memory.get_recent(5)
@@ -291,6 +712,31 @@ func _build_dialogue_context() -> String:
 			context += "- %s: %s\n" % [time_str, mem.get("description", "")]
 		context += "\n"
 
+	# Include recent reflections (insights) for richer dialogue
+	var reflections: Array[Dictionary] = memory.get_by_type("reflection")
+	if not reflections.is_empty():
+		reflections.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
+			return a.get("game_time", 0) > b.get("game_time", 0)
+		)
+		var recent_reflections: Array[Dictionary] = reflections.slice(0, mini(3, reflections.size()))
+		context += "Your recent thoughts and realizations:\n"
+		for ref: Dictionary in recent_reflections:
+			context += "- %s\n" % ref.get("description", "")
+		context += "\n"
+
+	# Include notable environment observations
+	var env_memories: Array[Dictionary] = memory.get_by_type("environment")
+	if not env_memories.is_empty():
+		env_memories.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
+			return a.get("game_time", 0) > b.get("game_time", 0)
+		)
+		var recent_env: Array[Dictionary] = env_memories.slice(0, mini(3, env_memories.size()))
+		var env_strs: Array[String] = []
+		for mem: Dictionary in recent_env:
+			env_strs.append(mem.get("description", ""))
+		if not env_strs.is_empty():
+			context += "Things you've noticed around town: %s.\n\n" % ". ".join(env_strs)
+
 	context += "%s is standing in front of you and wants to talk. They recently moved to DeepTown and live in House 11. Respond naturally." % PlayerProfile.player_name
 	return context
 
@@ -301,6 +747,16 @@ func _get_template_response() -> String:
 		return "*yawns* I'm exhausted... heading home to rest."
 	if hunger < 20.0:
 		return "I'm starving, need to go eat."
+
+	# Activity-aware response (50% chance when doing something specific)
+	if current_activity != "" and not current_activity.begins_with("standing") and not current_activity.begins_with("at the"):
+		var activity_responses: Array[String] = [
+			"Can't you see I'm %s? But sure, what do you need?" % current_activity,
+			"Oh, hello! Just %s here. What brings you by?" % current_activity,
+			"Ah, a visitor! I was just %s." % current_activity,
+		]
+		if randf() < 0.5:
+			return activity_responses[randi() % activity_responses.size()]
 
 	var player_memories: Array[Dictionary] = memory.get_memories_about(PlayerProfile.player_name)
 	if player_memories.is_empty():
@@ -335,23 +791,34 @@ func _update_destination(hour: int) -> void:
 	if dest == _current_destination:
 		return
 
-	# Release old tile reservation before moving to new destination
+	# Release current furniture and tile reservation before moving
+	_release_current_object()
 	if _town_map and _town_map.has_method("release_tile"):
 		var old_grid := Vector2i(int(global_position.x) / TILE_SIZE, int(global_position.y) / TILE_SIZE)
 		_town_map.release_tile(old_grid, npc_name)
 
 	_current_destination = dest
 
-	# Pick an unreserved interior tile if available, otherwise use door position
+	# Determine target position — prefer tile next to work furniture
 	var target_pos: Vector2 = Vector2.ZERO
-	if _building_interiors.has(dest) and _building_interiors[dest].size() > 0:
-		if _town_map and _town_map.has_method("get_unreserved_interior_tile"):
-			target_pos = _town_map.get_unreserved_interior_tile(dest, npc_name)
+	var target_type: String = _get_target_furniture_type(dest)
+	if target_type != "" and _town_map:
+		var obj_id: String = WorldObjects.find_object_for_npc(dest, target_type, npc_name)
+		if obj_id != "" and WorldObjects._objects.has(obj_id):
+			var obj_grid: Vector2i = WorldObjects._objects[obj_id]["grid_pos"]
+			if _town_map.has_method("get_furniture_adjacent_tile"):
+				target_pos = _town_map.get_furniture_adjacent_tile(obj_grid)
+
+	# Fallback to unreserved interior tile if no furniture target
+	if target_pos == Vector2.ZERO:
+		if _building_interiors.has(dest) and _building_interiors[dest].size() > 0:
+			if _town_map and _town_map.has_method("get_unreserved_interior_tile"):
+				target_pos = _town_map.get_unreserved_interior_tile(dest, npc_name)
+			else:
+				var tiles: Array = _building_interiors[dest]
+				target_pos = tiles[randi() % tiles.size()]
 		else:
-			var tiles: Array = _building_interiors[dest]
-			target_pos = tiles[randi() % tiles.size()]
-	else:
-		target_pos = _building_positions.get(dest, Vector2.ZERO)
+			target_pos = _building_positions.get(dest, Vector2.ZERO)
 
 	if target_pos == Vector2.ZERO:
 		push_warning("[%s] No position for building '%s'" % [npc_name, dest])
@@ -368,10 +835,12 @@ func _update_destination(hour: int) -> void:
 	)
 
 	# Clamp to grid bounds
-	from_grid.x = clampi(from_grid.x, 0, 49)
-	from_grid.y = clampi(from_grid.y, 0, 39)
-	to_grid.x = clampi(to_grid.x, 0, 49)
-	to_grid.y = clampi(to_grid.y, 0, 39)
+	var map_w: int = _town_map.MAP_WIDTH if _town_map else 60
+	var map_h: int = _town_map.MAP_HEIGHT if _town_map else 45
+	from_grid.x = clampi(from_grid.x, 0, map_w - 1)
+	from_grid.y = clampi(from_grid.y, 0, map_h - 1)
+	to_grid.x = clampi(to_grid.x, 0, map_w - 1)
+	to_grid.y = clampi(to_grid.y, 0, map_h - 1)
 
 	# Get path from A*
 	_path = _astar.get_point_path(from_grid, to_grid)
@@ -383,6 +852,7 @@ func _update_destination(hour: int) -> void:
 
 	_path_index = 0
 	_is_moving = true
+	_update_activity()
 	print("[%s] Hour %d -> '%s' | Path: %d waypoints | From %s -> %s" % [
 		npc_name, hour, dest, _path.size(), from_grid, to_grid])
 
@@ -622,6 +1092,12 @@ func _build_npc_chat_context(other_npc: CharacterBody2D, topic: String, their_li
 
 	var context: String = "It's %s at the %s. " % [period, _current_destination]
 
+	# What you and the other NPC are doing
+	if current_activity != "":
+		context += "You are currently %s. " % current_activity
+	if other_npc.current_activity != "":
+		context += "%s is currently %s. " % [other_npc.npc_name, other_npc.current_activity]
+
 	# Your current state
 	if hunger < 40.0:
 		context += "You're quite hungry. "
@@ -636,6 +1112,26 @@ func _build_npc_chat_context(other_npc: CharacterBody2D, topic: String, their_li
 		context += "Recent memories: "
 		for mem: Dictionary in recent:
 			context += mem.get("description", "") + ". "
+
+	# Recent reflections (top 2)
+	var reflections: Array[Dictionary] = memory.get_by_type("reflection")
+	if not reflections.is_empty():
+		reflections.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
+			return a.get("game_time", 0) > b.get("game_time", 0)
+		)
+		for ref: Dictionary in reflections.slice(0, mini(2, reflections.size())):
+			context += "You've been thinking: %s " % ref.get("description", "")
+
+	# Shared environment context
+	var env_memories: Array[Dictionary] = memory.get_by_type("environment")
+	if not env_memories.is_empty():
+		env_memories.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
+			return a.get("game_time", 0) > b.get("game_time", 0)
+		)
+		var latest_env: Dictionary = env_memories[0]
+		var hours_ago: int = (GameClock.total_minutes - latest_env.get("game_time", 0)) / 60
+		if hours_ago < 6:
+			context += "Earlier you noticed: %s. " % latest_env.get("description", "")
 
 	# The conversation setup
 	if their_line == "":
@@ -710,7 +1206,22 @@ func _on_perception_body_entered(body: Node2D) -> void:
 		importance = 5.0
 		valence = 0.1  # Slightly positive — player is interesting
 
-	var description: String = "Saw %s near the %s" % [actor_name, observed_location]
+	# Include the observed NPC's current activity and object state in the description
+	var description: String = ""
+	if body.is_in_group("npcs") and "current_activity" in body and body.current_activity != "":
+		var other_object_id: String = body._current_object_id if "_current_object_id" in body else ""
+		if other_object_id != "":
+			var obj_state: String = WorldObjects.get_state(other_object_id)
+			description = "Saw %s %s near the %s" % [actor_name, body.current_activity, observed_location]
+			if obj_state != "idle" and obj_state != "unknown":
+				description += " (the %s was %s)" % [
+					other_object_id.get_slice(":", 1),
+					obj_state
+				]
+		else:
+			description = "Saw %s %s near the %s" % [actor_name, body.current_activity, observed_location]
+	else:
+		description = "Saw %s near the %s" % [actor_name, observed_location]
 
 	# Create memory with async embedding
 	_add_memory_with_embedding(description, "observation", actor_name,
@@ -749,3 +1260,116 @@ func _scan_perception_area() -> void:
 	var perception: Area2D = $PerceptionArea
 	for body: Node2D in perception.get_overlapping_bodies():
 		_on_perception_body_entered(body)
+
+
+func _scan_environment() -> void:
+	## Perceive object states in the current building.
+	## Creates memories about notable states: active objects, empty workstations, etc.
+	if GameClock.total_minutes - _last_environment_scan < ENVIRONMENT_SCAN_INTERVAL:
+		return
+	_last_environment_scan = GameClock.total_minutes
+
+	if _current_destination == "" or _is_moving:
+		return
+
+	var objects: Array[Dictionary] = WorldObjects.get_objects_in_building(_current_destination)
+	if objects.is_empty():
+		return
+
+	var notable: Array[String] = []
+
+	for obj: Dictionary in objects:
+		var obj_type: String = obj["tile_type"]
+		var state: String = obj["state"]
+		var user: String = obj["user"]
+
+		if state == "idle" or state == "unknown":
+			# Notable if this is a work object that SHOULD be active during work hours
+			if _is_work_hours() and _is_workplace_object(obj_type):
+				if user == "":
+					notable.append("the %s at the %s was idle" % [obj_type, _current_destination])
+			continue
+
+		# Active objects — always notable if someone else is using them
+		if user != "" and user != npc_name:
+			notable.append("%s was using the %s (%s)" % [user, obj_type, state])
+		elif user == npc_name:
+			continue
+		else:
+			# Object is in a non-idle state but no user — interesting
+			notable.append("the %s was %s" % [obj_type, state])
+
+	# Create at most 2 environment memories per scan (avoid spam)
+	var count: int = 0
+	for observation: String in notable:
+		if count >= 2:
+			break
+
+		var description: String = "Noticed %s at the %s" % [observation, _current_destination]
+
+		_add_memory_with_embedding(
+			description,
+			"environment",
+			"",
+			[npc_name] as Array[String],
+			_current_destination,
+			_current_destination,
+			2.5,
+			0.0
+		)
+		count += 1
+
+	if count > 0 and OS.is_debug_build():
+		print("[EnvScan] %s noticed %d things at %s" % [npc_name, count, _current_destination])
+
+
+func _on_arrive_at_building() -> void:
+	## Check building state on arrival: abandoned objects, empty workplaces.
+	var objects: Array[Dictionary] = WorldObjects.get_objects_in_building(_current_destination)
+
+	# Check if any work objects are active with no users (someone left something running)
+	for obj: Dictionary in objects:
+		if obj["state"] != "idle" and obj["user"] == "":
+			var desc: String = "Arrived at the %s and found the %s was %s with nobody around" % [
+				_current_destination, obj["tile_type"], obj["state"]
+			]
+			_add_memory_with_embedding(
+				desc, "environment", "", [npc_name] as Array[String],
+				_current_destination, _current_destination, 4.0, -0.1
+			)
+			if OS.is_debug_build():
+				print("[EnvScan] %s: %s" % [npc_name, desc])
+
+	# Check if workplace is empty during work hours (coworker missing)
+	if _current_destination == workplace_building and _is_work_hours():
+		var coworkers_present: bool = false
+		for npc: Node in get_tree().get_nodes_in_group("npcs"):
+			if npc == self:
+				continue
+			var other: CharacterBody2D = npc as CharacterBody2D
+			if other.workplace_building == workplace_building and other._current_destination == workplace_building:
+				coworkers_present = true
+				break
+
+		# Only note if there SHOULD be coworkers (some workplaces are solo)
+		var expected_coworkers: bool = workplace_building in ["Blacksmith", "Tavern", "Church", "Courthouse", "General Store"]
+		if expected_coworkers and not coworkers_present:
+			# Once per day — use observation cooldown to prevent spam
+			var today: int = GameClock.total_minutes / 1440
+			var check_key: String = "empty_%s_%d" % [workplace_building, today]
+			if not _observation_cooldowns.has(check_key):
+				_observation_cooldowns[check_key] = GameClock.total_minutes
+				var desc: String = "The %s was empty when I arrived for work" % workplace_building
+				_add_memory_with_embedding(
+					desc, "environment", "", [npc_name] as Array[String],
+					_current_destination, _current_destination, 3.0, -0.1
+				)
+
+
+func _is_work_hours() -> bool:
+	return GameClock.hour >= 6 and GameClock.hour < 17
+
+
+func _is_workplace_object(tile_type: String) -> bool:
+	## Is this the kind of object that should be in use during work hours?
+	return tile_type in ["oven", "anvil", "counter", "desk", "altar"]

@@ -45,8 +45,13 @@ func _refresh() -> void:
 		var mem_count: int = npc.memory.memories.size()
 		var conv_count: int = npc.memory.get_by_type("dialogue").size()
 
-		var text: String = "[b]%s[/b] (%s, %d) → %s\nH:%s E:%s S:%s  Mood:%.0f  Mem:%d  Conv:%d" % [
+		var activity: String = npc.current_activity if npc.current_activity != "" else "idle"
+		if activity.length() > 30:
+			activity = activity.substr(0, 27) + "..."
+
+		var text: String = "[b]%s[/b] (%s, %d) → %s\n[color=#ADF]%s[/color]\nH:%s E:%s S:%s  Mood:%.0f  Mem:%d  Conv:%d" % [
 			npc.npc_name, npc.job, npc.age, npc._current_destination,
+			activity,
 			hunger_bar, energy_bar, social_bar,
 			mood_val, mem_count, conv_count
 		]

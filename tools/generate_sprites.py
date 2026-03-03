@@ -260,6 +260,27 @@ def gen_door():
     save(img, "tiles", "door.png")
 
 
+def gen_door_open():
+    """Open door — floor visible with door edge on right side."""
+    img, d = new()
+    # Floor shows through (same as floor tile base)
+    img.paste(FLOOR_BASE, (0, 0, S, S))
+    # Floor plank lines
+    for y_line in range(0, S, 8):
+        d.line([(0, y_line), (31, y_line)], fill=FLOOR_DARK)
+    # Door frame on left and right edges
+    d.rectangle([0, 0, 2, 31], fill=DOOR_DARK)    # left frame
+    d.rectangle([29, 0, 31, 31], fill=DOOR_DARK)   # right frame
+    # Top frame
+    d.rectangle([0, 0, 31, 2], fill=DOOR_DARK)
+    # Door itself swung open — thin panel on the right
+    d.rectangle([26, 3, 28, 30], fill=DOOR_BASE)
+    d.rectangle([27, 3, 28, 30], fill=DOOR_LIGHT)
+    # Shadow on left where door was
+    d.rectangle([3, 3, 5, 30], fill=FLOOR_DARK)
+    save(img, "tiles", "door_open.png")
+
+
 def gen_roof():
     img, d = new()
     for row in range(4):
@@ -620,6 +641,187 @@ def draw_character(d: ImageDraw.ImageDraw,
     d.rectangle([16, 28, 20 + bw, 30], fill=shoe_color)
 
 
+def draw_character_sleeping(d: ImageDraw.ImageDraw,
+                            hair_color: tuple, shirt_color: tuple, pants_color: tuple,
+                            shoe_color: tuple = (80, 50, 30),
+                            skin: tuple = SKIN, skin_sh: tuple = SKIN_SHADOW,
+                            hair_style: str = "short",
+                            shirt_detail: tuple | None = None,
+                            wide: bool = False):
+    """Draw a sleeping front-facing character — eyes closed (lines instead of dots)."""
+    bw = 2 if wide else 0
+
+    # Hair
+    if hair_style == "short":
+        d.rectangle([12, 4, 19, 8], fill=hair_color)
+    elif hair_style == "bun":
+        d.rectangle([12, 4, 19, 8], fill=hair_color)
+        d.rectangle([14, 2, 17, 4], fill=hair_color)
+    elif hair_style == "balding":
+        d.rectangle([13, 5, 18, 8], fill=hair_color)
+        d.point((12, 6), fill=hair_color)
+        d.point((19, 6), fill=hair_color)
+
+    # Head
+    d.rectangle([12, 8, 19, 14], fill=skin)
+    d.rectangle([12, 12, 19, 14], fill=skin_sh)
+    # CLOSED EYES — horizontal lines instead of dots
+    d.line([(13, 10), (15, 10)], fill=BLACK)
+    d.line([(16, 10), (18, 10)], fill=BLACK)
+    # No mouth (sleeping)
+
+    # Shirt / body
+    lx = 10 - bw
+    rx = 21 + bw
+    d.rectangle([lx, 14, rx, 22], fill=shirt_color)
+    d.rectangle([lx - 2, 14, lx, 20], fill=shirt_color)
+    d.rectangle([rx, 14, rx + 2, 20], fill=shirt_color)
+    d.rectangle([lx - 2, 20, lx, 22], fill=skin)
+    d.rectangle([rx, 20, rx + 2, 22], fill=skin)
+
+    if shirt_detail:
+        d.rectangle([12, 15, 19, 21], fill=shirt_detail)
+
+    d.rectangle([11 - bw, 22, 15, 28], fill=pants_color)
+    d.rectangle([16, 22, 20 + bw, 28], fill=pants_color)
+    d.rectangle([11 - bw, 28, 15, 30], fill=shoe_color)
+    d.rectangle([16, 28, 20 + bw, 30], fill=shoe_color)
+
+
+def gen_player_sleep():
+    img, d = new()
+    draw_character_sleeping(d,
+        hair_color=(100, 60, 30),
+        shirt_color=(50, 100, 180),
+        pants_color=(60, 60, 100))
+    save(img, "characters", "player_sleep.png")
+
+
+def gen_maria_sleep():
+    img, d = new()
+    draw_character_sleeping(d,
+        hair_color=(140, 70, 30),
+        shirt_color=(220, 100, 120),
+        pants_color=(200, 90, 110),
+        hair_style="bun",
+        shirt_detail=(240, 235, 230))
+    save(img, "characters", "maria_sleep.png")
+
+
+def gen_thomas_sleep():
+    img, d = new()
+    draw_character_sleeping(d,
+        hair_color=(90, 55, 25),
+        shirt_color=(60, 140, 60),
+        pants_color=(80, 70, 50))
+    # White undershirt visible at collar
+    d.line([(14, 14), (17, 14)], fill=WHITE)
+    save(img, "characters", "thomas_sleep.png")
+
+
+def gen_elena_sleep():
+    img, d = new()
+    draw_character_sleeping(d,
+        hair_color=(40, 30, 20),
+        shirt_color=(50, 90, 140),
+        pants_color=(40, 70, 110))
+    # Star badge
+    d.point((15, 16), fill=(240, 220, 60))
+    d.point((16, 16), fill=(240, 220, 60))
+    d.point((15, 17), fill=(240, 200, 40))
+    d.point((16, 17), fill=(240, 200, 40))
+    save(img, "characters", "elena_sleep.png")
+
+
+def gen_aldric_sleep():
+    img, d = new()
+    draw_character_sleeping(d,
+        hair_color=(190, 190, 190),
+        shirt_color=(50, 45, 50),
+        pants_color=(45, 40, 45),
+        shoe_color=(40, 35, 40),
+        hair_style="balding")
+    # White collar
+    d.line([(13, 14), (18, 14)], fill=WHITE)
+    d.point((12, 14), fill=WHITE)
+    d.point((19, 14), fill=WHITE)
+    save(img, "characters", "aldric_sleep.png")
+
+
+def gen_gideon_sleep():
+    img, d = new()
+    draw_character_sleeping(d,
+        hair_color=(60, 35, 15),
+        shirt_color=(100, 70, 40),
+        pants_color=(70, 55, 35),
+        wide=True)
+    # Leather apron
+    d.rectangle([12, 16, 19, 22], fill=(80, 55, 30))
+    d.line([(15, 14), (15, 16)], fill=(80, 55, 30))
+    d.line([(16, 14), (16, 16)], fill=(80, 55, 30))
+    save(img, "characters", "gideon_sleep.png")
+
+
+def gen_rose_sleep():
+    img, d = new()
+    draw_character_sleeping(d,
+        hair_color=(180, 40, 40),
+        shirt_color=(120, 30, 60),
+        pants_color=(100, 25, 50),
+        hair_style="bun",
+        shirt_detail=(200, 180, 140))
+    save(img, "characters", "rose_sleep.png")
+
+
+def gen_finn_sleep():
+    img, d = new()
+    draw_character_sleeping(d,
+        hair_color=(180, 160, 80),
+        shirt_color=(140, 160, 100),
+        pants_color=(100, 80, 50))
+    save(img, "characters", "finn_sleep.png")
+
+
+def gen_clara_sleep():
+    img, d = new()
+    draw_character_sleeping(d,
+        hair_color=(60, 40, 30),
+        shirt_color=(80, 150, 100),
+        pants_color=(70, 130, 90))
+    save(img, "characters", "clara_sleep.png")
+
+
+def gen_silas_sleep():
+    img, d = new()
+    draw_character_sleeping(d,
+        hair_color=(200, 200, 200),
+        shirt_color=(110, 90, 70),
+        pants_color=(80, 70, 55),
+        hair_style="balding",
+        shoe_color=(60, 45, 30))
+    save(img, "characters", "silas_sleep.png")
+
+
+def gen_bram_sleep():
+    img, d = new()
+    draw_character_sleeping(d,
+        hair_color=(30, 25, 20),
+        shirt_color=(130, 90, 60),
+        pants_color=(70, 55, 40),
+        wide=True)
+    save(img, "characters", "bram_sleep.png")
+
+
+def gen_lyra_sleep():
+    img, d = new()
+    draw_character_sleeping(d,
+        hair_color=(100, 50, 20),
+        shirt_color=(70, 60, 110),
+        pants_color=(55, 45, 85),
+        shirt_detail=(200, 190, 160))
+    save(img, "characters", "lyra_sleep.png")
+
+
 def gen_player():
     img, d = new()
     draw_character(d,
@@ -778,6 +980,7 @@ def main():
     gen_wall_side()
     gen_floor()
     gen_door()
+    gen_door_open()
     gen_roof()
     gen_cobblestone()
     gen_dirt_path()
@@ -816,7 +1019,22 @@ def main():
     gen_bram()
     gen_lyra()
 
-    print(f"\nDone! 37 sprites generated.")
+    # Sleeping Characters
+    print("\n[Sleep sprites]")
+    gen_player_sleep()
+    gen_maria_sleep()
+    gen_thomas_sleep()
+    gen_elena_sleep()
+    gen_aldric_sleep()
+    gen_gideon_sleep()
+    gen_rose_sleep()
+    gen_finn_sleep()
+    gen_clara_sleep()
+    gen_silas_sleep()
+    gen_bram_sleep()
+    gen_lyra_sleep()
+
+    print(f"\nDone! 50 sprites generated.")
 
 
 if __name__ == "__main__":

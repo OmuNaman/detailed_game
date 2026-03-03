@@ -27,6 +27,7 @@ GameClock="*res://scripts/core/game_clock.gd"
 EmbeddingClient="*res://scripts/llm/embedding_client.gd"
 GeminiClient="*res://scripts/llm/gemini_client.gd"
 PlayerProfile="*res://scripts/core/player_profile.gd"
+WorldObjects="*res://scripts/core/world_objects.gd"
 
 [display]
 
