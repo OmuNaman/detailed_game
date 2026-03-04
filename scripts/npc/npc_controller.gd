@@ -103,19 +103,31 @@ const ENVIRONMENT_SCAN_INTERVAL: int = 30  # Every 30 game minutes
 var _dest_arrival_time: int = -1
 const MIN_STAY_MINUTES: int = 60
 
+# Real-time plan re-evaluation (CONTINUE/REACT)
+var _last_reaction_eval_time: int = 0
+var _reaction_in_progress: bool = false
+const REACTION_COOLDOWN_MINUTES: int = 10
+const REACTION_IMPORTANCE_THRESHOLD: float = 5.0
+
 # NPC-to-NPC conversation totals (for summary update trigger)
 var _npc_conv_totals: Dictionary = {}  # "OtherName" -> int (lifetime count)
 
-# Daily planning
-var _daily_plan: Array[Dictionary] = []  # [{hour, end_hour, destination, reason, completed}]
+# 3-Level Planning (Stanford recursive decomposition)
+var _plan_level1: Array[Dictionary] = []  # [{start_hour, end_hour, location, activity, decomposed}]
+var _plan_level2: Dictionary = {}          # {l1_index: Array[{hour, end_hour, activity}]}
+var _plan_level3: Dictionary = {}          # {"l1idx_l2idx": Array[{start_min, end_min, activity}]}
 var _last_plan_day: int = -1
 var _planning_in_progress: bool = false
+var _decomposition_in_progress: bool = false
 
 # Working memory — player conversation tracked for summary on end
 var _player_conv_history: Array[Dictionary] = []  # [{speaker, text}]
 
 # Emotional state decay tracking
 var _last_significant_event_time: int = 0
+
+# Environment tree: known world subgraph (buildings the NPC has visited)
+var _known_world: Dictionary = {}  # {building_name: {area_name: [object_types]}}
 
 @onready var sprite: Sprite2D = $Sprite2D
 @onready var name_label: Label = $NameLabel
@@ -136,6 +148,7 @@ func initialize(data: Dictionary, building_positions: Dictionary, building_inter
 
 	# Initialize three-tier memory system
 	memory.initialize(npc_name, personality, PlayerProfile.player_name)
+	_init_known_world()
 
 
 func _ready() -> void:
@@ -240,6 +253,7 @@ func _arrive() -> void:
 	_dest_arrival_time = GameClock.total_minutes  # Bug 9: Track arrival for minimum stay
 	_claim_work_object()
 	_update_activity()
+	_learn_building(_current_destination)
 	_on_arrive_at_building()
 
 
@@ -790,7 +804,7 @@ func _check_planning_on_load() -> void:
 
 
 func _generate_daily_plan() -> void:
-	## Ask Gemini for today's plan: 2-4 specific goals with times and locations.
+	## Stanford 3-level planning: generate Level 1 (5-8 full-day activities).
 	if _planning_in_progress:
 		return
 	if not GeminiClient.has_api_key():
@@ -800,7 +814,7 @@ func _generate_daily_plan() -> void:
 	_planning_in_progress = true
 	_last_plan_day = _get_current_day()
 
-	var system_prompt: String = _build_planning_system_prompt()
+	var system_prompt: String = _build_level1_prompt()
 	var user_message: String = _build_planning_context()
 
 	GeminiClient.generate(system_prompt, user_message, func(text: String, success: bool) -> void:
@@ -811,51 +825,56 @@ func _generate_daily_plan() -> void:
 			_generate_fallback_plan()
 			return
 
-		_daily_plan = _parse_plan(text)
+		_plan_level1 = _parse_level1_plan(text)
+		_plan_level2.clear()
+		_plan_level3.clear()
 
 		# Store plan as a memory + update core memory active goals
-		if not _daily_plan.is_empty():
+		if not _plan_level1.is_empty():
 			var plan_summary: Array[String] = []
-			for p: Dictionary in _daily_plan:
-				plan_summary.append("%s at the %s around %d:00" % [p["reason"], p["destination"], p["hour"]])
+			for p: Dictionary in _plan_level1:
+				plan_summary.append("%s at %s (%d:00-%d:00)" % [p["activity"], p["location"], p["start_hour"], p["end_hour"]])
 			var plan_desc: String = "My plans for today: %s" % ", ".join(plan_summary)
 			_add_memory_with_embedding(
 				plan_desc, "plan", npc_name, [npc_name] as Array[String],
-				home_building, home_building, 3.0, 0.1
+				home_building, home_building, 4.0, 0.1
 			)
 			memory.set_active_goals(plan_summary)
 
 		if OS.is_debug_build():
-			print("[Planning] %s's plan for today:" % npc_name)
-			for p: Dictionary in _daily_plan:
-				print("  %d:00-%d:00 → %s (%s)" % [p["hour"], p["end_hour"], p["destination"], p["reason"]])
+			print("[Planning] %s's L1 plan (%d blocks):" % [npc_name, _plan_level1.size()])
+			for p: Dictionary in _plan_level1:
+				print("  %d:00-%d:00 @ %s: %s" % [p["start_hour"], p["end_hour"], p["location"], p["activity"]])
 	)
 
 
 func _generate_fallback_plan() -> void:
-	## Simple deterministic plan when Gemini is unavailable.
-	## Adds 1-2 social visits based on relationships.
+	## Full-day deterministic plan when Gemini is unavailable.
 	_last_plan_day = _get_current_day()
-	_daily_plan.clear()
+	_plan_level1.clear()
+	_plan_level2.clear()
+	_plan_level3.clear()
+
+	_plan_level1.append({"start_hour": 5, "end_hour": 6, "location": home_building, "activity": "getting ready for the day", "decomposed": false})
+	_plan_level1.append({"start_hour": 6, "end_hour": 12, "location": workplace_building, "activity": "working at the %s" % workplace_building, "decomposed": false})
+	_plan_level1.append({"start_hour": 12, "end_hour": 13, "location": home_building, "activity": "lunch break at home", "decomposed": false})
+	_plan_level1.append({"start_hour": 13, "end_hour": 16, "location": workplace_building, "activity": "afternoon work", "decomposed": false})
 
 	var friends: Array[String] = Relationships.get_closest_friends(npc_name, 2)
-	if friends.is_empty():
-		return
+	if not friends.is_empty():
+		var friend_wp: String = _get_npc_workplace(friends[0])
+		if friend_wp != "" and friend_wp != workplace_building:
+			_plan_level1.append({"start_hour": 16, "end_hour": 17, "location": friend_wp, "activity": "visiting %s" % friends[0], "decomposed": false})
+			_plan_level1.append({"start_hour": 17, "end_hour": 20, "location": "Tavern", "activity": "evening socializing at the Tavern", "decomposed": false})
+		else:
+			_plan_level1.append({"start_hour": 16, "end_hour": 20, "location": "Tavern", "activity": "relaxing at the Tavern", "decomposed": false})
+	else:
+		_plan_level1.append({"start_hour": 16, "end_hour": 20, "location": "Tavern", "activity": "evening socializing", "decomposed": false})
 
-	# Visit best friend during afternoon break
-	var friend_name: String = friends[0]
-	var friend_workplace: String = _get_npc_workplace(friend_name)
-	if friend_workplace != "" and friend_workplace != workplace_building:
-		_daily_plan.append({
-			"hour": 15,
-			"end_hour": 16,
-			"destination": friend_workplace,
-			"reason": "visit %s" % friend_name,
-			"completed": false,
-		})
+	_plan_level1.append({"start_hour": 20, "end_hour": 22, "location": home_building, "activity": "winding down at home", "decomposed": false})
 
 	if OS.is_debug_build():
-		print("[Planning] %s — fallback plan: %d items" % [npc_name, _daily_plan.size()])
+		print("[Planning] %s — fallback plan: %d blocks" % [npc_name, _plan_level1.size()])
 
 
 func _get_npc_workplace(target_name: String) -> String:
@@ -867,36 +886,49 @@ func _get_npc_workplace(target_name: String) -> String:
 	return ""
 
 
-func _build_planning_system_prompt() -> String:
+func _get_npc_roster_text() -> String:
+	## Reusable NPC roster for prompts (prevents hallucinated names).
+	var text: String = "People who live and work in this town:\n"
+	text += "- Maria: Baker, works at Bakery, lives at House 1\n"
+	text += "- Thomas: Shopkeeper, works at General Store, lives at House 2\n"
+	text += "- Elena: Sheriff, works at Sheriff Office, lives at House 3\n"
+	text += "- Gideon: Blacksmith, works at Blacksmith, lives at House 4\n"
+	text += "- Rose: Barmaid, works at Tavern, lives at House 5\n"
+	text += "- Lyra: Clerk, works at Courthouse, lives at House 6\n"
+	text += "- Finn: Farmer/laborer, delivers to General Store, lives at House 7 (married to Clara)\n"
+	text += "- Clara: Devout churchgoer, helps at Church, lives at House 7 (married to Finn)\n"
+	text += "- Bram: Apprentice blacksmith, works at Blacksmith with Gideon, lives at House 8\n"
+	text += "- Old Silas: Retired storyteller, spends time at Tavern, lives at House 9\n"
+	text += "- Father Aldric: Priest, works at Church, lives at House 10\n"
+	text += "\nIMPORTANT: Only reference people from this list. Do NOT invent names.\n"
+	return text
+
+
+func _build_level1_prompt() -> String:
+	## System prompt for Level 1 planning: full-day 5-8 activity blocks.
 	var prompt: String = "You are %s, a %d-year-old %s in DeepTown. %s\n\n" % [npc_name, age, job, personality]
-	prompt += "You are planning your day. Generate 2-4 specific plans beyond your normal routine. Each plan should have a TIME (hour 6-22), a DESTINATION (must be one of the buildings listed below), and a short REASON.\n\n"
+	prompt += "Plan your FULL day from waking (hour 5) to sleeping (hour 22). "
+	prompt += "Generate 5-8 activity blocks covering every hour of your day.\n\n"
+	prompt += "Your workplace: %s (you typically work there from 6-15)\n" % workplace_building
+	prompt += "Your home: %s\n\n" % home_building
 	prompt += "Available buildings: Bakery, General Store, Tavern, Church, Sheriff Office, Courthouse, Blacksmith\n\n"
-
-	# Bug 4: NPC roster to prevent hallucinated names
-	prompt += "People who live and work in this town:\n"
-	prompt += "- Maria: Baker, works at Bakery, lives at House 1\n"
-	prompt += "- Thomas: Shopkeeper, works at General Store, lives at House 2\n"
-	prompt += "- Elena: Sheriff, works at Sheriff Office, lives at House 3\n"
-	prompt += "- Gideon: Blacksmith, works at Blacksmith, lives at House 4\n"
-	prompt += "- Rose: Barmaid, works at Tavern, lives at House 5\n"
-	prompt += "- Lyra: Clerk, works at Courthouse, lives at House 6\n"
-	prompt += "- Finn: Farmer/laborer, delivers to General Store, lives at House 7 (married to Clara)\n"
-	prompt += "- Clara: Devout churchgoer, helps at Church, lives at House 7 (married to Finn)\n"
-	prompt += "- Bram: Apprentice blacksmith, works at Blacksmith with Gideon, lives at House 8\n"
-	prompt += "- Old Silas: Retired storyteller, spends time at Tavern, lives at House 9\n"
-	prompt += "- Father Aldric: Priest, works at Church, lives at House 10\n"
-	prompt += "\nIMPORTANT: Only reference people from this list. Do NOT invent names.\n\n"
-
+	prompt += _get_npc_roster_text()
+	prompt += "\nFormat each block as: START-END|LOCATION|ACTIVITY (one per line)\n"
+	prompt += "Example:\n"
+	prompt += "5-6|%s|Wake up, have breakfast\n" % home_building
+	prompt += "6-12|%s|Morning work at the %s\n" % [workplace_building, workplace_building]
+	prompt += "12-13|%s|Lunch break at home\n" % home_building
+	prompt += "13-16|%s|Afternoon work\n" % workplace_building
+	prompt += "16-17|Tavern|Visit Rose for a drink and catch up\n"
+	prompt += "17-20|Tavern|Evening socializing\n"
+	prompt += "20-22|%s|Dinner and winding down\n\n" % home_building
 	prompt += "Rules:\n"
-	prompt += "- You work at the %s from roughly 6-15\n" % workplace_building
-	prompt += "- Plans should be for BREAKS or AFTER WORK (during work hours, plan short 1-2 hour visits only)\n"
-	prompt += "- Plans should involve visiting other NPCs, checking on things, or personal goals\n"
-	prompt += "- Be specific about WHO you want to see and WHY\n"
-	prompt += "- Format each plan as: HOUR|DESTINATION|REASON (one per line)\n"
-	prompt += "- Example: 11|Church|Visit Father Aldric to ask about the Sunday service\n"
-	prompt += "- Example: 16|Tavern|Have a drink with Rose and catch up on news\n"
-	prompt += "- Do NOT plan for hours 23-5 (sleep time)\n"
-	prompt += "- Do NOT plan to visit your own workplace during core work hours (you're already there)"
+	prompt += "- Cover hours 5-22 with NO gaps\n"
+	prompt += "- Include meals at home around hours 7, 12, 19\n"
+	prompt += "- Be specific about WHO and WHY for social visits\n"
+	prompt += "- Make today different based on your feelings and relationships\n"
+	prompt += "- Include at least one social visit outside your workplace\n"
+	prompt += "- Do NOT plan past hour 22"
 	return prompt
 
 
@@ -954,72 +986,338 @@ func _build_planning_context() -> String:
 	if plan_player_summary != "" and not plan_player_summary.begins_with("I haven't met"):
 		context += "About %s: %s\n\n" % [PlayerProfile.player_name, plan_player_summary]
 
-	context += "What 2-4 specific things do you want to do today beyond your normal routine? Format: HOUR|DESTINATION|REASON"
+	var world_desc: String = _describe_known_world()
+	if world_desc != "":
+		context += "%s\n\n" % world_desc
+
+	context += "Plan your full day (5-8 blocks from hour 5 to 22). Format: START-END|LOCATION|ACTIVITY"
 	return context
 
 
-func _parse_plan(text: String) -> Array[Dictionary]:
-	## Parse "HOUR|DESTINATION|REASON" lines from Gemini output.
+func _parse_level1_plan(text: String) -> Array[Dictionary]:
+	## Parse "START-END|LOCATION|ACTIVITY" lines from Gemini output.
 	var plans: Array[Dictionary] = []
 	var valid_buildings: Array[String] = [
 		"Bakery", "General Store", "Tavern", "Church",
 		"Sheriff Office", "Courthouse", "Blacksmith",
 	]
-	# Also include all house names as valid destinations
 	for i: int in range(1, 12):
 		valid_buildings.append("House %d" % i)
 
-	var lines: PackedStringArray = text.split("\n")
-	for line: String in lines:
+	for line: String in text.split("\n"):
 		var cleaned: String = line.strip_edges()
 		if cleaned == "":
 			continue
 
 		# Remove leading numbering or bullets
 		if cleaned.length() > 2 and cleaned[0].is_valid_int() and (cleaned[1] == '.' or cleaned[1] == ')' or cleaned[1] == ':'):
-			if cleaned[1] != '|':
+			if cleaned[1] != '-' and cleaned[1] != '|':
 				cleaned = cleaned.substr(2).strip_edges()
 
 		var parts: PackedStringArray = cleaned.split("|")
 		if parts.size() < 3:
 			continue
 
-		var hour_str: String = parts[0].strip_edges()
-		var dest: String = parts[1].strip_edges()
-		var reason: String = parts[2].strip_edges()
+		var time_part: String = parts[0].strip_edges()
+		var location: String = parts[1].strip_edges()
+		var activity: String = parts[2].strip_edges()
 
-		# Validate hour
-		var hour: int = hour_str.to_int()
-		if hour < 6 or hour > 22:
+		# Parse "START-END" format
+		var time_parts: PackedStringArray = time_part.split("-")
+		if time_parts.size() != 2:
+			continue
+		var start_h: int = time_parts[0].strip_edges().to_int()
+		var end_h: int = time_parts[1].strip_edges().to_int()
+		if start_h < 5 or end_h > 23 or start_h >= end_h:
 			continue
 
-		# Validate destination — find closest match
-		var matched_dest: String = _match_building_name(dest, valid_buildings)
-		if matched_dest == "":
-			continue
-
-		# Don't plan to go to your own workplace during core work hours
-		if matched_dest == workplace_building and hour >= 6 and hour < 15:
+		var matched_loc: String = _match_building_name(location, valid_buildings)
+		if matched_loc == "":
 			continue
 
 		plans.append({
-			"hour": hour,
-			"end_hour": mini(hour + 2, 22),
-			"destination": matched_dest,
-			"reason": reason,
-			"completed": false,
+			"start_hour": start_h,
+			"end_hour": end_h,
+			"location": matched_loc,
+			"activity": activity,
+			"decomposed": false,
 		})
 
-	# Cap at 4 plans
-	if plans.size() > 4:
-		plans.resize(4)
-
-	# Sort by hour
+	# Cap at 8 blocks, sort by start_hour
+	if plans.size() > 8:
+		plans.resize(8)
 	plans.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
-		return a["hour"] < b["hour"]
+		return a["start_hour"] < b["start_hour"]
+	)
+	return plans
+
+
+func _decompose_to_level2(l1_index: int) -> void:
+	## Break a Level 1 block into hourly steps via Flash Lite.
+	## Lazy: called just-in-time when we enter an L1 block without L2.
+	if _decomposition_in_progress or _plan_level2.has(l1_index):
+		return
+	if l1_index < 0 or l1_index >= _plan_level1.size():
+		return
+
+	var l1: Dictionary = _plan_level1[l1_index]
+	var duration: int = l1["end_hour"] - l1["start_hour"]
+
+	# Single-hour blocks don't need decomposition — just create one L2 entry
+	if duration <= 1:
+		_plan_level2[l1_index] = [{
+			"hour": l1["start_hour"],
+			"end_hour": l1["end_hour"],
+			"activity": l1["activity"],
+		}]
+		return
+
+	if not GeminiClient.has_api_key() or GeminiClient._request_queue.size() > 10:
+		# Fallback: one L2 entry per hour with L1 activity text
+		var steps: Array[Dictionary] = []
+		for h: int in range(l1["start_hour"], l1["end_hour"]):
+			steps.append({"hour": h, "end_hour": h + 1, "activity": l1["activity"]})
+		_plan_level2[l1_index] = steps
+		return
+
+	_decomposition_in_progress = true
+	var system_prompt: String = "You are %s, a %s (%s). Break this %d-hour activity block into hourly steps." % [
+		npc_name, job, personality, duration
+	]
+	var user_msg: String = "Activity: '%s' at %s from %d:00 to %d:00.\n" % [
+		l1["activity"], l1["location"], l1["start_hour"], l1["end_hour"]
+	]
+	user_msg += "Break this into hourly steps. One line per hour.\nFormat: HOUR|ACTIVITY\n"
+	user_msg += "Example:\n6|Open the shop and arrange shelves\n7|Greet early customers and restock\n"
+	user_msg += "Only output the lines, nothing else."
+
+	GeminiClient.generate(system_prompt, user_msg,
+		func(text: String, success: bool) -> void:
+			_decomposition_in_progress = false
+			if not is_instance_valid(self):
+				return
+			if success and text.strip_edges() != "":
+				var steps: Array[Dictionary] = _parse_level2_steps(text, l1["start_hour"], l1["end_hour"])
+				if not steps.is_empty():
+					_plan_level2[l1_index] = steps
+					if OS.is_debug_build():
+						print("[Plan L2] %s: Decomposed block %d into %d hourly steps" % [npc_name, l1_index, steps.size()])
+					return
+			# Fallback: one entry per hour
+			var fallback: Array[Dictionary] = []
+			for h: int in range(l1["start_hour"], l1["end_hour"]):
+				fallback.append({"hour": h, "end_hour": h + 1, "activity": l1["activity"]})
+			_plan_level2[l1_index] = fallback,
+		GeminiClient.MODEL_LITE
 	)
 
-	return plans
+
+func _parse_level2_steps(text: String, block_start: int, block_end: int) -> Array[Dictionary]:
+	## Parse HOUR|ACTIVITY format into L2 step array.
+	var steps: Array[Dictionary] = []
+	for line: String in text.strip_edges().split("\n"):
+		line = line.strip_edges()
+		if line == "" or not line.contains("|"):
+			continue
+		var parts: PackedStringArray = line.split("|", true, 2)
+		if parts.size() < 2:
+			continue
+		var hour_str: String = parts[0].strip_edges()
+		var activity: String = parts[1].strip_edges()
+		if not hour_str.is_valid_int():
+			continue
+		var h: int = hour_str.to_int()
+		if h < block_start or h >= block_end:
+			continue
+		steps.append({"hour": h, "end_hour": h + 1, "activity": activity})
+
+	# Sort by hour, cap to block duration
+	steps.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
+		return a["hour"] < b["hour"]
+	)
+	var max_steps: int = block_end - block_start
+	if steps.size() > max_steps:
+		steps.resize(max_steps)
+	return steps
+
+
+func _decompose_to_level3(l1_idx: int, l2_idx: int) -> void:
+	## Break an hourly L2 step into 5-20 minute actions via Flash Lite.
+	var l3_key: String = "%d_%d" % [l1_idx, l2_idx]
+	if _decomposition_in_progress or _plan_level3.has(l3_key):
+		return
+	if not _plan_level2.has(l1_idx):
+		return
+	var l2_steps: Array = _plan_level2[l1_idx]
+	if l2_idx < 0 or l2_idx >= l2_steps.size():
+		return
+
+	var l2: Dictionary = l2_steps[l2_idx]
+
+	if not GeminiClient.has_api_key() or GeminiClient._request_queue.size() > 10:
+		# Fallback: single 60-min entry
+		_plan_level3[l3_key] = [{"start_min": 0, "end_min": 60, "activity": l2["activity"]}]
+		return
+
+	_decomposition_in_progress = true
+	var l1: Dictionary = _plan_level1[l1_idx]
+	var system_prompt: String = "You are %s, a %s. Break this 1-hour activity into 3-6 specific actions (5-20 min each)." % [npc_name, job]
+	var user_msg: String = "Hour %d:00 at %s: '%s'\n" % [l2["hour"], l1["location"], l2["activity"]]
+	user_msg += "Format: START_MIN-END_MIN|ACTION\nExample:\n0-10|Unlock the front door and light the stove\n10-30|Knead bread dough for today's loaves\n30-50|Shape loaves and place in oven\n50-60|Clean up workspace\n"
+	user_msg += "Minutes must be 0-60, covering the full hour. Only output lines."
+
+	GeminiClient.generate(system_prompt, user_msg,
+		func(text: String, success: bool) -> void:
+			_decomposition_in_progress = false
+			if not is_instance_valid(self):
+				return
+			if success and text.strip_edges() != "":
+				var steps: Array[Dictionary] = _parse_level3_steps(text)
+				if not steps.is_empty():
+					_plan_level3[l3_key] = steps
+					if OS.is_debug_build():
+						print("[Plan L3] %s: Decomposed L2[%d][%d] into %d fine actions" % [npc_name, l1_idx, l2_idx, steps.size()])
+					return
+			# Fallback: single entry
+			_plan_level3[l3_key] = [{"start_min": 0, "end_min": 60, "activity": l2["activity"]}],
+		GeminiClient.MODEL_LITE
+	)
+
+
+func _parse_level3_steps(text: String) -> Array[Dictionary]:
+	## Parse START_MIN-END_MIN|ACTION format into L3 step array.
+	var steps: Array[Dictionary] = []
+	for line: String in text.strip_edges().split("\n"):
+		line = line.strip_edges()
+		if line == "" or not line.contains("|"):
+			continue
+		var parts: PackedStringArray = line.split("|", true, 2)
+		if parts.size() < 2:
+			continue
+		var time_part: String = parts[0].strip_edges()
+		var activity: String = parts[1].strip_edges()
+		if not time_part.contains("-"):
+			continue
+		var time_parts: PackedStringArray = time_part.split("-")
+		if time_parts.size() < 2:
+			continue
+		if not time_parts[0].strip_edges().is_valid_int() or not time_parts[1].strip_edges().is_valid_int():
+			continue
+		var start_m: int = time_parts[0].strip_edges().to_int()
+		var end_m: int = time_parts[1].strip_edges().to_int()
+		if start_m < 0 or end_m > 60 or start_m >= end_m:
+			continue
+		steps.append({"start_min": start_m, "end_min": end_m, "activity": activity})
+
+	steps.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
+		return a["start_min"] < b["start_min"]
+	)
+	if steps.size() > 6:
+		steps.resize(6)
+	return steps
+
+
+func _evaluate_reaction(observation: String, importance: float) -> void:
+	## Evaluate whether the NPC should react to a significant observation by replanning.
+	## Flash Lite call: CONTINUE or REACT|LOCATION|NEW_ACTIVITY
+	if _reaction_in_progress or _decomposition_in_progress or _planning_in_progress:
+		return
+	if not GeminiClient.has_api_key() or GeminiClient._request_queue.size() > 10:
+		return
+	# Cooldown
+	var current_time: int = GameClock.total_minutes
+	if current_time - _last_reaction_eval_time < REACTION_COOLDOWN_MINUTES:
+		return
+	# Don't react while sleeping
+	if GameClock.hour >= 23 or GameClock.hour < 5:
+		return
+
+	_last_reaction_eval_time = current_time
+	_reaction_in_progress = true
+
+	var active_plan: Dictionary = _get_current_plan()
+	var current_activity_text: String = active_plan.get("reason", current_activity) if not active_plan.is_empty() else current_activity
+
+	var system_prompt: String = "You are %s, a %s in DeepTown. Decide if this observation warrants changing your current plans." % [npc_name, job]
+	var user_msg: String = "You are currently: %s at the %s.\n" % [current_activity_text, _current_destination]
+	user_msg += "New observation (importance %.1f): %s\n\n" % [importance, observation]
+	user_msg += "Should you CONTINUE your current activity or REACT by changing plans?\n"
+	user_msg += "If CONTINUE, just write: CONTINUE\n"
+	user_msg += "If REACT, write: REACT|LOCATION|NEW_ACTIVITY\n"
+	user_msg += "Example: REACT|Tavern|Rush to check on the commotion\n"
+	user_msg += "Only react if this is truly important enough to disrupt your plans."
+
+	GeminiClient.generate(system_prompt, user_msg,
+		func(text: String, success: bool) -> void:
+			_reaction_in_progress = false
+			if not is_instance_valid(self):
+				return
+			if success and text.strip_edges() != "":
+				_process_reaction_result(text.strip_edges(), observation)
+			elif OS.is_debug_build():
+				print("[Reaction] %s: Evaluation failed, continuing current plan" % npc_name),
+		GeminiClient.MODEL_LITE
+	)
+
+
+func _process_reaction_result(text: String, observation: String) -> void:
+	## Parse CONTINUE/REACT response and apply if reacting.
+	var first_line: String = text.split("\n")[0].strip_edges().to_upper()
+
+	if first_line.begins_with("CONTINUE"):
+		if OS.is_debug_build():
+			print("[Reaction] %s: CONTINUE — staying on plan" % npc_name)
+		return
+
+	if not first_line.begins_with("REACT"):
+		return
+
+	# Parse REACT|LOCATION|NEW_ACTIVITY
+	var parts: PackedStringArray = first_line.split("|")
+	if parts.size() < 3:
+		return
+
+	var location_raw: String = text.split("\n")[0].strip_edges().split("|")[1].strip_edges()
+	var activity_raw: String = text.split("\n")[0].strip_edges().split("|")[2].strip_edges()
+
+	# Fuzzy match location
+	var valid_names: Array[String] = []
+	for npc: Node in get_tree().get_nodes_in_group("npcs"):
+		if npc.home_building not in valid_names:
+			valid_names.append(npc.home_building)
+		if npc.workplace_building not in valid_names:
+			valid_names.append(npc.workplace_building)
+	for bname: String in ["Tavern", "Church", "Courthouse", "Sheriff Office"]:
+		if bname not in valid_names:
+			valid_names.append(bname)
+
+	var matched_loc: String = _match_building_name(location_raw, valid_names)
+	if matched_loc == "":
+		matched_loc = _current_destination  # Stay put but change activity
+
+	# Override the current L1 block
+	var l1_idx: int = _get_current_l1_index()
+	if l1_idx >= 0:
+		_plan_level1[l1_idx]["location"] = matched_loc
+		_plan_level1[l1_idx]["activity"] = activity_raw if activity_raw != "" else "reacting to event"
+		# Clear L2/L3 for this block so they regenerate
+		_plan_level2.erase(l1_idx)
+		var keys_to_erase: Array[String] = []
+		for key: String in _plan_level3.keys():
+			if key.begins_with(str(l1_idx) + "_"):
+				keys_to_erase.append(key)
+		for key: String in keys_to_erase:
+			_plan_level3.erase(key)
+
+	# Store reaction as a memory
+	var react_desc: String = "Decided to react to: %s — going to %s to %s" % [observation, matched_loc, activity_raw]
+	_add_memory_with_embedding(react_desc, "plan", npc_name,
+		[npc_name] as Array[String], _current_destination, matched_loc, 4.0, 0.0)
+
+	# Immediately redirect
+	_update_destination(GameClock.hour)
+	if OS.is_debug_build():
+		print("[Reaction] %s: REACT — redirecting to %s for '%s'" % [npc_name, matched_loc, activity_raw])
 
 
 func _match_building_name(input: String, valid_names: Array[String]) -> String:
@@ -1034,28 +1332,67 @@ func _match_building_name(input: String, valid_names: Array[String]) -> String:
 
 
 func _get_active_plan_destination(hour: int) -> String:
-	## Check if any plan is active for the current hour.
-	## Returns the destination or "" if no active plan.
-	for plan: Dictionary in _daily_plan:
-		if plan["completed"]:
-			continue
-		if hour >= plan["hour"] and hour < plan["end_hour"]:
-			return plan["destination"]
-		# Mark plans as completed if we're past their window
-		if hour >= plan["end_hour"]:
-			plan["completed"] = true
+	## Check if any L1 plan block covers the current hour.
+	## Returns the location or "" if no active plan.
+	for plan: Dictionary in _plan_level1:
+		if hour >= plan["start_hour"] and hour < plan["end_hour"]:
+			return plan["location"]
 	return ""
 
 
-func _get_current_plan() -> Dictionary:
-	## Returns the active plan for the current hour, or {}.
+func _get_current_l1_index() -> int:
+	## Find the Level 1 plan block index for the current hour. Returns -1 if none.
 	var hour: int = GameClock.hour
-	for plan: Dictionary in _daily_plan:
-		if plan["completed"]:
-			continue
-		if hour >= plan["hour"] and hour < plan["end_hour"]:
-			return plan
-	return {}
+	for i: int in range(_plan_level1.size()):
+		var plan: Dictionary = _plan_level1[i]
+		if hour >= plan["start_hour"] and hour < plan["end_hour"]:
+			return i
+	return -1
+
+
+func _get_current_plan() -> Dictionary:
+	## Returns the most granular active plan for the current time.
+	## Cascade: L3 → L2 → L1. Returns {destination, reason, hour, end_hour}.
+	var hour: int = GameClock.hour
+	var minute: int = GameClock.minute
+	var l1_idx: int = _get_current_l1_index()
+	if l1_idx < 0:
+		return {}
+
+	var l1: Dictionary = _plan_level1[l1_idx]
+
+	# Check Level 3 (most granular: 5-20min blocks)
+	if _plan_level2.has(l1_idx):
+		var l2_steps: Array = _plan_level2[l1_idx]
+		for l2_idx: int in range(l2_steps.size()):
+			var l2: Dictionary = l2_steps[l2_idx]
+			if hour >= l2["hour"] and hour < l2["end_hour"]:
+				var l3_key: String = "%d_%d" % [l1_idx, l2_idx]
+				if _plan_level3.has(l3_key):
+					var l3_steps: Array = _plan_level3[l3_key]
+					for l3: Dictionary in l3_steps:
+						if minute >= l3["start_min"] and minute < l3["end_min"]:
+							return {
+								"destination": l1["location"],
+								"reason": l3["activity"],
+								"hour": l2["hour"],
+								"end_hour": l2["end_hour"],
+							}
+				# Fall through to L2
+				return {
+					"destination": l1["location"],
+					"reason": l2["activity"],
+					"hour": l2["hour"],
+					"end_hour": l2["end_hour"],
+				}
+
+	# Fall through to L1
+	return {
+		"destination": l1["location"],
+		"reason": l1["activity"],
+		"hour": l1["start_hour"],
+		"end_hour": l1["end_hour"],
+	}
 
 
 func _pair_key(a: String, b: String) -> String:
@@ -1074,9 +1411,11 @@ func _face_toward(target_pos: Vector2) -> void:
 
 
 func _on_hour_changed(hour: int) -> void:
-	# Midnight: reset counts + run memory maintenance
+	# Midnight: reset counts + run memory maintenance + clear L2/L3 plans
 	if hour == 0:
 		_conv_counts_today.clear()
+		_plan_level2.clear()
+		_plan_level3.clear()
 		_run_midnight_maintenance()
 
 	# Emotional state decay: 3+ quiet hours → drift to neutral
@@ -1122,6 +1461,22 @@ func _on_time_tick(_game_minute: int) -> void:
 		if global_position.distance_to(npc.global_position) <= 96.0:
 			social = minf(social + 0.3, 100.0)
 			break  # Only need one nearby NPC to get the bonus
+
+	# Just-in-time L2 decomposition every 5 min
+	if GameClock.total_minutes % 5 == 0 and not _decomposition_in_progress:
+		var l1_idx: int = _get_current_l1_index()
+		if l1_idx >= 0 and not _plan_level2.has(l1_idx):
+			_decompose_to_level2(l1_idx)
+		# L3 decomposition for the current hour's L2 step
+		elif l1_idx >= 0 and _plan_level2.has(l1_idx):
+			var l2_steps: Array = _plan_level2[l1_idx]
+			for l2_idx: int in range(l2_steps.size()):
+				var l2: Dictionary = l2_steps[l2_idx]
+				if GameClock.hour >= l2["hour"] and GameClock.hour < l2["end_hour"]:
+					var l3_key: String = "%d_%d" % [l1_idx, l2_idx]
+					if not _plan_level3.has(l3_key):
+						_decompose_to_level3(l1_idx, l2_idx)
+					break
 
 	# Re-evaluate destination every 5 game minutes based on needs
 	if GameClock.total_minutes % 5 == 0:
@@ -1377,9 +1732,9 @@ func _build_dialogue_context() -> String:
 
 	# Today's plans
 	var upcoming_plans: Array[String] = []
-	for plan: Dictionary in _daily_plan:
-		if not plan["completed"]:
-			upcoming_plans.append("At %d:00 — %s at the %s" % [plan["hour"], plan["reason"], plan["destination"]])
+	for plan: Dictionary in _plan_level1:
+		if GameClock.hour < plan["end_hour"]:
+			upcoming_plans.append("%d:00-%d:00 — %s at the %s" % [plan["start_hour"], plan["end_hour"], plan["activity"], plan["location"]])
 	if not upcoming_plans.is_empty():
 		context += "Your plans for today:\n"
 		for p: String in upcoming_plans:
@@ -1476,9 +1831,9 @@ func _build_dialogue_context_for_reply(player_message: String) -> String:
 
 	# Today's plans
 	var upcoming_plans: Array[String] = []
-	for plan: Dictionary in _daily_plan:
-		if not plan["completed"]:
-			upcoming_plans.append("At %d:00 — %s at the %s" % [plan["hour"], plan["reason"], plan["destination"]])
+	for plan: Dictionary in _plan_level1:
+		if GameClock.hour < plan["end_hour"]:
+			upcoming_plans.append("%d:00-%d:00 — %s at the %s" % [plan["start_hour"], plan["end_hour"], plan["activity"], plan["location"]])
 	if not upcoming_plans.is_empty():
 		context += "Your plans for today:\n"
 		for p: String in upcoming_plans:
@@ -1923,6 +2278,9 @@ func _wants_to_visit(building: String, _hour: int) -> bool:
 
 # --- NPC-to-NPC Conversations ---
 
+const NPC_CONV_MAX_TURNS: int = 6   # Up to 6 turns (3 exchanges)
+const NPC_CONV_MIN_TURNS: int = 2   # At least 1 exchange
+
 func _try_npc_conversation() -> void:
 	## If another NPC is within range and we haven't talked recently, have a real conversation.
 
@@ -2022,81 +2380,187 @@ func _fake_npc_conversation(other_npc: CharacterBody2D) -> void:
 
 
 func _real_npc_conversation(other_npc: CharacterBody2D) -> void:
-	## Gemini-powered 2-line exchange. I say something, they reply.
+	## Turn-by-turn Gemini-powered conversation (up to 6 turns).
 
 	# Skip if Gemini queue is backed up (cost control)
 	if GeminiClient._request_queue.size() > 10:
 		_fake_npc_conversation(other_npc)
 		return
 
-	var other_name: String = other_npc.npc_name
 	var topic: String = _pick_conversation_topic(other_npc)
+	var max_turns: int = NPC_CONV_MAX_TURNS
+	if GeminiClient._request_queue.size() > 5:
+		max_turns = 2  # Throttle when busy
 
-	# Build context for the initiator (me)
-	var my_system: String = _build_npc_chat_system_prompt()
-	var my_context: String = _build_npc_chat_context(other_npc, topic, "")
+	# Start the recursive turn chain
+	_run_conversation_turn(self, other_npc, [], 0, max_turns, topic,
+		func(history: Array[Dictionary]) -> void:
+			if not is_instance_valid(self) or not is_instance_valid(other_npc):
+				return
 
-	# Step 1: I generate my opening line
-	GeminiClient.generate(my_system, my_context, func(my_line: String, my_success: bool) -> void:
-		if not my_success or my_line == "":
-			my_line = _get_npc_chat_fallback(topic)
+			var other_name: String = other_npc.npc_name
 
-		my_line = my_line.strip_edges().replace("\"", "").left(120)
+			# Build combined memory text from all turns
+			var my_lines: Array[String] = []
+			var their_lines: Array[String] = []
+			for entry: Dictionary in history:
+				if entry["speaker"] == npc_name:
+					my_lines.append(entry["text"])
+				else:
+					their_lines.append(entry["text"])
 
-		# Step 2: Other NPC generates their reply
-		var their_system: String = other_npc._build_npc_chat_system_prompt()
-		var their_context: String = other_npc._build_npc_chat_context(self, topic, my_line)
+			var full_dialogue: String = ""
+			for entry: Dictionary in history:
+				full_dialogue += "%s: \"%s\" " % [entry["speaker"], entry["text"]]
 
-		GeminiClient.generate(their_system, their_context, func(their_line: String, their_success: bool) -> void:
-			if not their_success or their_line == "":
-				their_line = other_npc._get_npc_chat_fallback(topic)
-
-			their_line = their_line.strip_edges().replace("\"", "").left(120)
-
-			# Store actual dialogue in both NPCs' memories
+			# Store dialogue memory for both NPCs (full conversation)
 			_add_memory_with_embedding(
-				"I said to %s: \"%s\" — %s replied: \"%s\" (at the %s)" % [
-					other_name, my_line, other_name, their_line, _current_destination],
+				"Conversation with %s at the %s — %s" % [other_name, _current_destination, full_dialogue.left(300)],
 				"dialogue", other_name, [npc_name, other_name] as Array[String],
 				_current_destination, _current_destination, 4.0, 0.2
 			)
 
 			other_npc._add_memory_with_embedding(
-				"%s said to me: \"%s\" — I replied: \"%s\" (at the %s)" % [
-					npc_name, my_line, their_line, _current_destination],
+				"Conversation with %s at the %s — %s" % [npc_name, _current_destination, full_dialogue.left(300)],
 				"dialogue", npc_name, [other_npc.npc_name, npc_name] as Array[String],
 				_current_destination, _current_destination, 4.0, 0.2
 			)
 
-			# Content-aware relationship impact (replaces flat +1/+1)
-			_analyze_npc_conversation_impact(other_npc, my_line, their_line)
+			# Content-aware relationship impact using first exchange
+			var first_my: String = my_lines[0] if not my_lines.is_empty() else ""
+			var first_their: String = their_lines[0] if not their_lines.is_empty() else ""
+			if first_my != "" and first_their != "":
+				_analyze_npc_conversation_impact(other_npc, first_my, first_their)
 
-			# Show speech bubbles
-			_show_speech_bubble(my_line)
-			get_tree().create_timer(2.0).timeout.connect(func() -> void:
-				if is_instance_valid(other_npc):
-					other_npc._show_speech_bubble(their_line)
-			)
-
-			print("[NPC Chat] %s: \"%s\"" % [npc_name, my_line])
-			print("[NPC Chat] %s: \"%s\"" % [other_name, their_line])
-			print("[NPC Chat] %s→%s at %s (queue: %d, total_calls: %d)" % [
-				npc_name, other_name, _current_destination,
-				GeminiClient._request_queue.size(), GeminiClient.total_requests
+			print("[NPC Chat] %s↔%s: %d turns at %s (queue: %d)" % [
+				npc_name, other_name, history.size(), _current_destination,
+				GeminiClient._request_queue.size()
 			])
 
-			# Gossip phase — initiator may share something interesting
+			# Gossip phase (now 20% chance)
 			var gossip_mem: Dictionary = _pick_gossip_for(other_npc)
 			if not gossip_mem.is_empty():
 				_share_gossip_with(other_npc, gossip_mem)
 
-			# Responder may also gossip back
 			if is_instance_valid(other_npc):
 				var reverse_gossip: Dictionary = other_npc._pick_gossip_for(self)
 				if not reverse_gossip.is_empty():
 					other_npc._share_gossip_with(self, reverse_gossip)
+	)
+
+
+func _run_conversation_turn(speaker: CharacterBody2D, listener: CharacterBody2D,
+		history: Array[Dictionary], turn: int, max_turns: int,
+		topic: String, on_done: Callable) -> void:
+	## Recursive callback chain: each turn generates one line, then swaps roles.
+	if not is_instance_valid(speaker) or not is_instance_valid(listener):
+		on_done.call(history)
+		return
+
+	# Build context with per-turn retrieval
+	var system_prompt: String = speaker._build_npc_chat_system_prompt()
+	var history_text: String = ""
+	for entry: Dictionary in history:
+		history_text += "%s: \"%s\"\n" % [entry["speaker"], entry["text"]]
+
+	var context: String = speaker._build_npc_chat_context_for_turn(listener, topic, history_text, turn)
+
+	GeminiClient.generate(system_prompt, context, func(line: String, success: bool) -> void:
+		if not is_instance_valid(speaker) or not is_instance_valid(listener):
+			on_done.call(history)
+			return
+
+		if not success or line.strip_edges() == "":
+			line = speaker._get_npc_chat_fallback(topic)
+		line = line.strip_edges().replace("\"", "").left(120)
+
+		# Add to history
+		history.append({"speaker": speaker.npc_name, "text": line})
+
+		# Show speech bubble
+		speaker._show_speech_bubble(line)
+		print("[NPC Chat T%d] %s: \"%s\"" % [turn, speaker.npc_name, line])
+
+		# Detect third-party mentions for this line
+		_detect_third_party_mentions(speaker.npc_name, line, listener)
+
+		# Check if conversation should end
+		var should_end: bool = false
+		if turn + 1 >= max_turns:
+			should_end = true
+		elif turn + 1 >= NPC_CONV_MIN_TURNS:
+			# 30% chance to end after min turns
+			if randf() < 0.3:
+				should_end = true
+		# Farewell detection
+		var line_lower: String = line.to_lower()
+		if line_lower.contains("goodbye") or line_lower.contains("see you") or line_lower.contains("take care") or line_lower.contains("farewell"):
+			if turn + 1 >= NPC_CONV_MIN_TURNS:
+				should_end = true
+
+		if should_end:
+			on_done.call(history)
+			return
+
+		# Next turn after brief delay — swap speaker and listener
+		get_tree().create_timer(1.5).timeout.connect(func() -> void:
+			_run_conversation_turn(listener, speaker, history, turn + 1, max_turns, topic, on_done)
 		)
 	)
+
+
+func _build_npc_chat_context_for_turn(other_npc: CharacterBody2D, topic: String,
+		history_text: String, turn: int) -> String:
+	## Per-turn context with conversation history and targeted retrieval.
+	var context: String = ""
+
+	# Base context from the standard builder (without the reply line)
+	var hour: int = GameClock.hour
+	var period: String = "morning" if hour < 12 else ("afternoon" if hour < 17 else ("evening" if hour < 21 else "night"))
+	context += "It's %s at the %s. " % [period, _current_destination]
+
+	if current_activity != "":
+		context += "You are currently %s. " % current_activity
+	if other_npc.current_activity != "":
+		context += "%s is currently %s. " % [other_npc.npc_name, other_npc.current_activity]
+
+	# Relationship
+	var trust_l: String = Relationships.get_trust_label(npc_name, other_npc.npc_name)
+	var affec_l: String = Relationships.get_affection_label(npc_name, other_npc.npc_name)
+	var respe_l: String = Relationships.get_respect_label(npc_name, other_npc.npc_name)
+	context += "You %s %s, %s them, and %s them. " % [trust_l, other_npc.npc_name, affec_l, respe_l]
+
+	# NPC summary for conversation partner from core memory
+	var npc_summaries: Dictionary = memory.core_memory.get("npc_summaries", {})
+	var partner_summary: String = npc_summaries.get(other_npc.npc_name, "")
+	if partner_summary != "":
+		context += "What you know about %s: %s " % [other_npc.npc_name, partner_summary]
+
+	# Per-turn retrieval: use last line said as query (or topic for first turn)
+	var retrieval_query: String = topic
+	if not history_text.is_empty():
+		var last_line: String = history_text.strip_edges().split("\n")[-1]
+		if last_line.length() > 5:
+			retrieval_query = last_line
+
+	var retrieved: Array[Dictionary] = memory.retrieve_by_query_text(
+		retrieval_query, GameClock.total_minutes, 3)
+	if not retrieved.is_empty():
+		context += "Relevant memories: "
+		for mem: Dictionary in retrieved:
+			context += "%s %s. " % [mem.get("text", mem.get("description", "")), _format_memory_age(mem)]
+
+	# Conversation history so far
+	if history_text != "":
+		context += "\n\nConversation so far:\n" + history_text
+
+	# Instruction
+	if turn == 0:
+		context += "\nYou're chatting with %s about %s. Say ONE line (max 1-2 sentences)." % [other_npc.npc_name, topic]
+	else:
+		context += "\nContinue the conversation with %s. Say ONE line (max 1-2 sentences). If the conversation has reached a natural end, you can say goodbye." % other_npc.npc_name
+
+	return context
 
 
 func _pick_conversation_topic(other_npc: CharacterBody2D) -> String:
@@ -2186,8 +2650,16 @@ func _build_npc_chat_context(other_npc: CharacterBody2D, topic: String, their_li
 	if social > 80.0:
 		context += "You're in a great mood. "
 
-	# Retrieval-based memories relevant to this conversation
+	# Retrieval-based memories relevant to this conversation (broadened with recent third-party names)
 	var retrieval_query: String = "talking with %s at the %s" % [other_npc.npc_name, _current_destination]
+	var recent_actors: Array[String] = []
+	for mem: Dictionary in memory.get_recent(5):
+		var actor: String = mem.get("actor", "")
+		if actor != "" and actor != npc_name and actor != other_npc.npc_name:
+			if actor not in recent_actors:
+				recent_actors.append(actor)
+	if not recent_actors.is_empty():
+		retrieval_query += " " + " ".join(recent_actors.slice(0, 2))
 	var retrieved: Array[Dictionary] = memory.retrieve_by_query_text(
 		retrieval_query, GameClock.total_minutes, 5)
 	if not retrieved.is_empty():
@@ -2293,6 +2765,10 @@ func _on_perception_body_entered(body: Node2D) -> void:
 	# Create memory with async embedding
 	_add_memory_with_embedding(description, "observation", actor_name,
 		[npc_name, actor_name] as Array[String], my_location, observed_location, importance, valence)
+
+	# Evaluate reaction for significant observations
+	if importance >= REACTION_IMPORTANCE_THRESHOLD:
+		_evaluate_reaction(description, importance)
 
 
 func _estimate_location(pos: Vector2) -> String:
@@ -2430,6 +2906,8 @@ func _scan_environment() -> void:
 	if count > 0 and OS.is_debug_build():
 		print("[EnvScan] %s noticed %d things at %s" % [npc_name, count, _current_destination])
 
+	_update_known_object_states()
+
 
 func _on_arrive_at_building() -> void:
 	## Check building state on arrival: abandoned objects, empty workplaces.
@@ -2483,13 +2961,122 @@ func _is_workplace_object(tile_type: String) -> bool:
 	return tile_type in ["oven", "anvil", "counter", "desk", "altar"]
 
 
+# --- Natural Information Diffusion ---
+
+func _detect_third_party_mentions(speaker_name: String, line_text: String, listener: CharacterBody2D) -> void:
+	## Scan dialogue text for mentions of third-party NPCs/player.
+	## Creates gossip-type memory for the listener about what was said.
+	if not is_instance_valid(listener) or not "memory" in listener:
+		return
+
+	var all_names: Array[String] = []
+	for npc: Node in get_tree().get_nodes_in_group("npcs"):
+		if npc.npc_name != speaker_name and npc.npc_name != listener.npc_name:
+			all_names.append(npc.npc_name)
+	# Also check for player name
+	var player_name: String = PlayerProfile.player_name
+	if player_name != "" and player_name != speaker_name:
+		all_names.append(player_name)
+
+	var line_lower: String = line_text.to_lower()
+	for mentioned_name: String in all_names:
+		if line_lower.contains(mentioned_name.to_lower()):
+			var importance: float = 3.0
+			if mentioned_name == player_name:
+				importance = 4.0
+			var desc: String = "%s mentioned %s: \"%s\"" % [speaker_name, mentioned_name, line_text]
+			# Truncate if too long
+			if desc.length() > 200:
+				desc = desc.substr(0, 197) + "..."
+
+			# Add as gossip-type memory to the listener
+			var mem: Dictionary = listener.memory.create_memory(
+				desc, "gossip", speaker_name,
+				[speaker_name, mentioned_name, listener.npc_name],
+				listener._current_destination, listener._current_destination,
+				importance, 0.0
+			)
+			mem["gossip_source"] = speaker_name
+			mem["gossip_hops"] = 1
+			listener.memory.add_memory(mem)
+			if OS.is_debug_build():
+				print("[Diffusion] %s heard %s mention %s" % [listener.npc_name, speaker_name, mentioned_name])
+
+
 # --- Gossip System ---
 
 const GOSSIP_TRUST_THRESHOLD: float = 15.0  # Minimum trust to share gossip
-const GOSSIP_CHANCE: float = 0.4             # 40% chance of gossiping per conversation
+const GOSSIP_CHANCE: float = 0.2             # 20% chance of explicit gossiping (reduced — natural diffusion handles the rest)
 const GOSSIP_MIN_IMPORTANCE: float = 3.0     # Only share important-ish memories
 const GOSSIP_MAX_AGE_HOURS: int = 48         # Don't share ancient news
 const GOSSIP_MAX_HOPS: int = 3               # Max propagation depth
+
+# --- Environment Tree ---
+# Static hierarchical world model: Building → Area → Objects (matches town_generator.gd)
+const WORLD_TREE: Dictionary = {
+	"Bakery": {"Kitchen": ["oven"], "Front": ["counter", "counter"]},
+	"General Store": {"Shelves": ["shelf", "shelf", "shelf"], "Counter Area": ["counter", "counter"]},
+	"Tavern": {"Bar": ["counter", "counter", "counter", "counter", "barrel", "barrel"], "Seating": ["table", "table"]},
+	"Church": {"Altar Area": ["altar", "altar", "altar"], "Pews": ["pew", "pew", "pew", "pew", "pew", "pew", "pew", "pew"]},
+	"Sheriff Office": {"Office": ["desk", "desk", "shelf"]},
+	"Courthouse": {"Clerk Area": ["desk", "desk", "desk"], "Gallery": ["pew", "pew", "pew"]},
+	"Blacksmith": {"Forge": ["anvil", "barrel", "shelf"]},
+}
+const HOUSE_TREE: Dictionary = {"Bedroom": ["bed"], "Living Area": ["shelf", "table"]}
+
+
+func _init_known_world() -> void:
+	## Seed known world with home and workplace buildings.
+	_learn_building(home_building)
+	if workplace_building != "" and workplace_building != home_building:
+		_learn_building(workplace_building)
+
+
+func _learn_building(building_name: String) -> void:
+	## Add a building to this NPC's known world from the static tree.
+	if _known_world.has(building_name):
+		return
+	var tree_entry: Dictionary = {}
+	if WORLD_TREE.has(building_name):
+		tree_entry = WORLD_TREE[building_name]
+	elif building_name.begins_with("House"):
+		tree_entry = HOUSE_TREE
+	else:
+		return
+	_known_world[building_name] = tree_entry.duplicate(true)
+	if OS.is_debug_build():
+		print("[World] %s learned layout of %s" % [npc_name, building_name])
+
+
+func _update_known_object_states() -> void:
+	## Sync known_world entries with actual object states from WorldObjects.
+	if not _known_world.has(_current_destination):
+		return
+	var objects: Array[Dictionary] = WorldObjects.get_objects_in_building(_current_destination)
+	# Store observed states for prompt enrichment
+	for obj: Dictionary in objects:
+		if obj["state"] != "idle" and obj["state"] != "unknown":
+			var key: String = "%s:%s" % [_current_destination, obj["tile_type"]]
+			_known_world[key] = obj["state"]
+
+
+func _describe_known_world() -> String:
+	## Compact summary of known buildings and areas for prompt context.
+	var parts: Array[String] = []
+	for bld_name: String in _known_world:
+		if ":" in bld_name:
+			continue  # Skip object state entries
+		var tree: Variant = _known_world[bld_name]
+		if tree is Dictionary:
+			var areas: Array[String] = []
+			for area_name: String in tree:
+				areas.append(area_name)
+			parts.append("%s (%s)" % [bld_name, ", ".join(areas)])
+		else:
+			parts.append(bld_name)
+	if parts.is_empty():
+		return ""
+	return "Places you know: %s" % "; ".join(parts)
 
 
 func _pick_gossip_for(other_npc: CharacterBody2D) -> Dictionary:
