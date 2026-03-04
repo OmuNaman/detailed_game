@@ -111,10 +111,13 @@ func _submit_reply() -> void:
 
 	# Get NPC reply with conversation context
 	_add_message(_current_npc.npc_name, "...", true)
-	_current_npc.get_conversation_reply_async(player_text, _conversation_history, func(response: String) -> void:
+	var npc_ref: CharacterBody2D = _current_npc
+	npc_ref.get_conversation_reply_async(player_text, _conversation_history, func(response: String) -> void:
+		if not is_instance_valid(npc_ref) or _current_npc == null:
+			return
 		_remove_last_message()
-		_add_message(_current_npc.npc_name, response, false)
-		_conversation_history.append({"speaker": _current_npc.npc_name, "text": response})
+		_add_message(npc_ref.npc_name, response, false)
+		_conversation_history.append({"speaker": npc_ref.npc_name, "text": response})
 		_exchange_count += 1
 
 		if _exchange_count >= MAX_EXCHANGES:

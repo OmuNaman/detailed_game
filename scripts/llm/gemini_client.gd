@@ -3,7 +3,7 @@ extends Node
 ## Falls back gracefully if API unavailable. Serializes requests via queue.
 
 const MODEL: String = "gemini-2.5-flash"
-const MODEL_LITE: String = "gemini-2.0-flash-lite"
+const MODEL_LITE: String = "gemini-2.5-flash-lite"
 const API_URL: String = "https://generativelanguage.googleapis.com/v1beta/models/"
 
 var _api_key: String = ""
@@ -58,10 +58,14 @@ func _process_queue() -> void:
 
 	var model: String = req.get("model", MODEL)
 	var url: String = API_URL + model + ":generateContent?key=" + _api_key
+	var gen_config: Dictionary = {"maxOutputTokens": 256, "temperature": 0.8}
+	# Only include thinkingConfig for models that support it (2.5 Flash main)
+	if model == MODEL:
+		gen_config["thinkingConfig"] = {"thinkingBudget": 0}
 	var body: Dictionary = {
 		"contents": [{"parts": [{"text": req["message"]}]}],
 		"systemInstruction": {"parts": [{"text": req["system"]}]},
-		"generationConfig": {"maxOutputTokens": 256, "temperature": 0.8, "thinkingConfig": {"thinkingBudget": 0}}
+		"generationConfig": gen_config,
 	}
 	var json_body: String = JSON.stringify(body)
 	var headers: PackedStringArray = ["Content-Type: application/json"]
