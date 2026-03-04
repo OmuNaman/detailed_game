@@ -102,6 +102,9 @@ const ENVIRONMENT_SCAN_INTERVAL: int = 30  # Every 30 game minutes
 var _dest_arrival_time: int = -1
 const MIN_STAY_MINUTES: int = 60
 
+# NPC-to-NPC conversation totals (for summary update trigger)
+var _npc_conv_totals: Dictionary = {}  # "OtherName" -> int (lifetime count)
+
 # Daily planning
 var _daily_plan: Array[Dictionary] = []  # [{hour, end_hour, destination, reason, completed}]
 var _last_plan_day: int = -1
@@ -988,8 +991,7 @@ func get_dialogue_response_async(callback: Callable) -> void:
 				"dialogue", PlayerProfile.player_name, [npc_name, PlayerProfile.player_name] as Array[String],
 				_current_destination, _current_destination, 4.0, 0.2
 			)
-			# Player talked to this NPC — builds relationship
-			Relationships.modify(npc_name, PlayerProfile.player_name, 1, 1, 0)
+			# Opening greeting — no relationship bump yet (player hasn't said anything)
 			callback.call(text)
 		else:
 			callback.call(_get_template_response())
@@ -1020,9 +1022,8 @@ func get_conversation_reply_async(player_message: String, history: Array[Diction
 				[npc_name, PlayerProfile.player_name] as Array[String],
 				_current_destination, _current_destination, 5.0, 0.3
 			)
-			Relationships.modify(npc_name, PlayerProfile.player_name, 1, 1, 0)
-			# Update core memory: player summary after conversation
-			_update_player_summary_async(player_message, text)
+			# Content-aware impact analysis (replaces flat +1/+1 and player summary update)
+			_analyze_player_conversation_impact(player_message, text)
 			callback.call(text)
 		else:
 			callback.call(_get_template_response())
@@ -1095,12 +1096,18 @@ func _build_dialogue_context() -> String:
 	context += "- Energy: %d/100 %s\n" % [int(energy), "(exhausted!)" if energy < 20.0 else "(tired)" if energy < 40.0 else "(fine)"]
 	context += "- Social: %d/100 %s\n\n" % [int(social), "(lonely)" if social < 30.0 else "(could use company)" if social < 50.0 else "(content)"]
 
-	# Relationship with the player
-	var player_rel: Dictionary = Relationships.get_relationship(npc_name, PlayerProfile.player_name)
-	var player_label: String = Relationships.get_opinion_label(npc_name, PlayerProfile.player_name)
-	context += "Your feelings toward %s (the person you're talking to): you %s them. (Trust: %d, Affection: %d, Respect: %d)\n\n" % [
-		PlayerProfile.player_name, player_label, player_rel["trust"], player_rel["affection"], player_rel["respect"]
-	]
+	# Relationship with the player (per-dimension descriptions)
+	var trust_label: String = Relationships.get_trust_label(npc_name, PlayerProfile.player_name)
+	var affec_label: String = Relationships.get_affection_label(npc_name, PlayerProfile.player_name)
+	var respe_label: String = Relationships.get_respect_label(npc_name, PlayerProfile.player_name)
+	context += "Your relationship with %s (the person you're talking to):\n" % PlayerProfile.player_name
+	context += "- Trust: You %s them\n" % trust_label
+	context += "- Affection: You %s them\n" % affec_label
+	context += "- Respect: You %s them\n" % respe_label
+	var player_core_summary: String = memory.core_memory.get("player_summary", "")
+	if player_core_summary != "":
+		context += "- Your feelings: %s\n" % player_core_summary
+	context += "\nRespond naturally based on these feelings. Low trust = guarded. High affection = warm. Negative respect = dismissive. Never mention numbers.\n\n"
 
 	# Include nearby object states for richer context
 	var building_objects: Array[Dictionary] = WorldObjects.get_objects_in_building(_current_destination)
@@ -1188,22 +1195,170 @@ func _build_dialogue_context() -> String:
 	return context
 
 
-func _update_player_summary_async(player_said: String, npc_replied: String) -> void:
-	## Ask Gemini to update core memory's player_summary after a conversation.
+func _analyze_player_conversation_impact(player_text: String, npc_response: String) -> void:
+	## Analyze conversation content to determine relationship impact via Flash Lite.
+	## Replaces flat +1/+1 with content-aware trust/affection/respect changes.
+	## Also updates core memory: emotional_state, player_summary, key_facts.
+	if not GeminiClient.has_api_key():
+		Relationships.modify(npc_name, PlayerProfile.player_name, 1, 1, 0)
+		return
+
+	var rel: Dictionary = Relationships.get_relationship(npc_name, PlayerProfile.player_name)
+	var old_summary: String = memory.core_memory.get("player_summary", "")
+	var identity_text: String = memory.core_memory.get("identity", personality)
+	var summary_or_default: String = old_summary if old_summary != "" else "No prior impression"
+
+	var prompt: String = "You are analyzing a conversation between %s and %s in a small fantasy town.\n\n%s's personality: %s\n%s's current feelings about %s: %s\nCurrent relationship — Trust: %d, Affection: %d, Respect: %d\n\nThe conversation:\n%s said: \"%s\"\n%s replied: \"%s\"\n\nBased on what %s said, how should %s's feelings change?\n\nRespond ONLY with this exact JSON, no other text:\n{\"trust_change\": 0, \"affection_change\": 0, \"respect_change\": 0, \"emotional_state\": \"how %s feels now\", \"player_summary_update\": \"updated 1-2 sentence summary of what %s thinks about %s\", \"key_fact\": \"new fact learned, or empty string\"}\n\nScoring rules:\n- Values between -5 and +5\n- 0 = neutral small talk\n- +1 to +2 = friendly, positive, helpful\n- +3 to +5 = deeply meaningful, vulnerable, generous\n- -1 to -2 = rude, dismissive\n- -3 to -5 = threatening, insulting, betrayal\n- Trust: honesty/promises (+) vs lying/sketchy (-)\n- Affection: warmth/humor/compliments (+) vs coldness/insults (-)\n- Respect: competence/bravery/wisdom (+) vs cowardice/disrespect (-)" % [
+		npc_name, PlayerProfile.player_name,
+		npc_name, identity_text.left(150),
+		npc_name, PlayerProfile.player_name, summary_or_default,
+		rel["trust"], rel["affection"], rel["respect"],
+		PlayerProfile.player_name, player_text.left(200),
+		npc_name, npc_response.left(200),
+		PlayerProfile.player_name, npc_name,
+		npc_name, npc_name, PlayerProfile.player_name
+	]
+
+	GeminiClient.generate(
+		"You analyze conversation impact on relationships. Return ONLY valid JSON.",
+		prompt,
+		func(text: String, success: bool) -> void:
+			if not success or text == "":
+				Relationships.modify(npc_name, PlayerProfile.player_name, 1, 1, 0)
+				return
+			_apply_player_impact(text),
+		GeminiClient.MODEL_LITE
+	)
+
+
+func _apply_player_impact(raw_json: String) -> void:
+	## Parse and apply the impact analysis from Flash Lite.
+	var data: Variant = GeminiClient.parse_json_response(raw_json)
+	if data == null or not data is Dictionary:
+		Relationships.modify(npc_name, PlayerProfile.player_name, 1, 1, 0)
+		return
+
+	var trust_d: int = clampi(int(data.get("trust_change", 0)), -5, 5)
+	var affec_d: int = clampi(int(data.get("affection_change", 0)), -5, 5)
+	var respe_d: int = clampi(int(data.get("respect_change", 0)), -5, 5)
+
+	if trust_d != 0 or affec_d != 0 or respe_d != 0:
+		Relationships.modify(npc_name, PlayerProfile.player_name, trust_d, affec_d, respe_d)
+	else:
+		# Pure small talk — tiny trust bump for showing up
+		Relationships.modify(npc_name, PlayerProfile.player_name, 1, 0, 0)
+
+	# Update core memory
+	var new_emotion: String = data.get("emotional_state", "")
+	if new_emotion != "":
+		memory.update_emotional_state(new_emotion.left(150))
+
+	var new_summary: String = data.get("player_summary_update", "")
+	if new_summary != "":
+		memory.update_player_summary(new_summary.left(200))
+
+	var new_fact: String = data.get("key_fact", "")
+	if new_fact != "" and new_fact.length() > 3:
+		memory.add_key_fact(new_fact.left(100))
+
+	# Update emotional valence on the most recent player dialogue memory
+	var total: int = trust_d + affec_d + respe_d
+	var recent_mems: Array = memory.memories
+	for i: int in range(recent_mems.size() - 1, maxi(recent_mems.size() - 3, -1), -1):
+		if recent_mems[i].get("type", "") == "dialogue" and PlayerProfile.player_name in recent_mems[i].get("entities", []):
+			recent_mems[i]["emotional_valence"] = clampf(float(total) / 10.0, -1.0, 1.0)
+			break
+
+	if OS.is_debug_build():
+		print("[Impact] %s→%s: T:%+d A:%+d R:%+d" % [npc_name, PlayerProfile.player_name, trust_d, affec_d, respe_d])
+
+
+func _analyze_npc_conversation_impact(other_npc: CharacterBody2D, my_line: String, their_line: String) -> void:
+	## Analyze NPC-to-NPC conversation for bidirectional relationship impact.
+	var other_name: String = other_npc.npc_name
+	_npc_conv_totals[other_name] = _npc_conv_totals.get(other_name, 0) + 1
+
+	if not GeminiClient.has_api_key() or GeminiClient._request_queue.size() > 8:
+		Relationships.modify_mutual(npc_name, other_name, 1, 1, 0)
+		return
+
+	var rel: Dictionary = Relationships.get_relationship(npc_name, other_name)
+	var prompt: String = "Conversation between %s and %s:\n%s: \"%s\"\n%s: \"%s\"\n\nCurrent relationship: Trust:%d Affection:%d Respect:%d\n\nFor EACH person, rate how feelings change. JSON only:\n{\"a_to_b\": {\"trust\": 0, \"affection\": 0, \"respect\": 0}, \"b_to_a\": {\"trust\": 0, \"affection\": 0, \"respect\": 0}}\nValues -3 to +3. 0 for casual chat." % [
+		npc_name, other_name,
+		npc_name, my_line.left(120),
+		other_name, their_line.left(120),
+		rel["trust"], rel["affection"], rel["respect"]
+	]
+
+	GeminiClient.generate(
+		"Analyze conversation impact. Return ONLY valid JSON.",
+		prompt,
+		func(text: String, success: bool) -> void:
+			_apply_npc_impact(other_npc, text, success, my_line, their_line),
+		GeminiClient.MODEL_LITE
+	)
+
+
+func _apply_npc_impact(other_npc: CharacterBody2D, raw_json: String, success: bool, my_line: String, their_line: String) -> void:
+	## Parse and apply bidirectional NPC-NPC conversation impact.
+	var other_name: String = other_npc.npc_name if is_instance_valid(other_npc) else ""
+	if not success or raw_json == "" or other_name == "":
+		if other_name != "":
+			Relationships.modify_mutual(npc_name, other_name, 1, 1, 0)
+		return
+
+	var data: Variant = GeminiClient.parse_json_response(raw_json)
+	if data == null or not data is Dictionary:
+		Relationships.modify_mutual(npc_name, other_name, 1, 1, 0)
+		return
+
+	var a2b: Dictionary = data.get("a_to_b", {})
+	var b2a: Dictionary = data.get("b_to_a", {})
+
+	var a_t: int = clampi(int(a2b.get("trust", 0)), -3, 3)
+	var a_a: int = clampi(int(a2b.get("affection", 0)), -3, 3)
+	var a_r: int = clampi(int(a2b.get("respect", 0)), -3, 3)
+	var b_t: int = clampi(int(b2a.get("trust", 0)), -3, 3)
+	var b_a: int = clampi(int(b2a.get("affection", 0)), -3, 3)
+	var b_r: int = clampi(int(b2a.get("respect", 0)), -3, 3)
+
+	# If all zero, give minimal +1 trust for showing up
+	if a_t == 0 and a_a == 0 and a_r == 0:
+		a_t = 1
+	if b_t == 0 and b_a == 0 and b_r == 0:
+		b_t = 1
+	Relationships.modify(npc_name, other_name, a_t, a_a, a_r)
+	Relationships.modify(other_name, npc_name, b_t, b_a, b_r)
+
+	# NPC summary update — every 3rd conversation OR total magnitude >= 3
+	var total_mag: int = absi(a_t) + absi(a_a) + absi(a_r)
+	var conv_count: int = _npc_conv_totals.get(other_name, 0)
+	if total_mag >= 3 or conv_count % 3 == 0:
+		_update_npc_summary_async(other_name, my_line, their_line)
+
+	if OS.is_debug_build():
+		print("[NPC Impact] %s→%s: T:%+d A:%+d R:%+d | %s→%s: T:%+d A:%+d R:%+d" % [
+			npc_name, other_name, a_t, a_a, a_r,
+			other_name, npc_name, b_t, b_a, b_r])
+
+
+func _update_npc_summary_async(other_name: String, my_line: String, their_line: String) -> void:
+	## Ask Flash Lite to update this NPC's impression of another NPC after conversation.
 	if not GeminiClient.has_api_key():
 		return
-	var old_summary: String = memory.core_memory.get("player_summary", "")
-	var prompt: String = "Based on this conversation with %s, update your understanding of them in 1-2 sentences.\nCurrent understanding: %s\nThey said: \"%s\"\nYou replied: \"%s\"\nNew understanding:" % [
-		PlayerProfile.player_name, old_summary, player_said.left(100), npc_replied.left(100)
+	var old_summary: String = memory.core_memory.get("npc_summaries", {}).get(other_name, "No prior impression")
+	var prompt: String = "%s had this exchange with %s: \"%s\" / \"%s\"\nPrevious impression of %s: \"%s\"\nWrite a 1-2 sentence updated impression:" % [
+		npc_name, other_name, my_line.left(100), their_line.left(100), other_name, old_summary
 	]
 	GeminiClient.generate(
-		"You are %s. Write a brief 1-2 sentence summary of what you now think about %s." % [npc_name, PlayerProfile.player_name],
+		"You are %s. Write a brief 1-2 sentence impression of %s." % [npc_name, other_name],
 		prompt,
 		func(text: String, success: bool) -> void:
 			if success and text != "":
-				memory.update_player_summary(text.strip_edges().left(200))
+				memory.update_npc_summary(other_name, text.strip_edges().left(200))
 				if OS.is_debug_build():
-					print("[Memory] %s updated player summary: %s" % [npc_name, text.strip_edges().left(80)])
+					print("[Memory] %s updated summary of %s: %s" % [npc_name, other_name, text.strip_edges().left(80)]),
+		GeminiClient.MODEL_LITE
 	)
 
 
@@ -1482,7 +1637,7 @@ func _fake_npc_conversation(other_npc: CharacterBody2D) -> void:
 		"dialogue", npc_name, [other_npc.npc_name, npc_name] as Array[String],
 		_current_destination, _current_destination, 3.0, 0.2
 	)
-	# Conversation builds trust and affection
+	# Fake conversations still get flat bump (no content to analyze)
 	Relationships.modify_mutual(npc_name, other_name, 1, 1, 0)
 
 	# Gossip phase — both NPCs may share something
@@ -1543,8 +1698,8 @@ func _real_npc_conversation(other_npc: CharacterBody2D) -> void:
 				_current_destination, _current_destination, 4.0, 0.2
 			)
 
-			# Conversation builds trust and affection
-			Relationships.modify_mutual(npc_name, other_name, 1, 1, 0)
+			# Content-aware relationship impact (replaces flat +1/+1)
+			_analyze_npc_conversation_impact(other_npc, my_line, their_line)
 
 			# Show speech bubbles
 			_show_speech_bubble(my_line)
@@ -1647,12 +1802,11 @@ func _build_npc_chat_context(other_npc: CharacterBody2D, topic: String, their_li
 	if not current_plan.is_empty():
 		context += "You're here because you planned to: %s. " % current_plan.get("reason", "visit")
 
-	# Relationship with conversation partner
-	var rel: Dictionary = Relationships.get_relationship(npc_name, other_npc.npc_name)
-	var rel_label: String = Relationships.get_opinion_label(npc_name, other_npc.npc_name)
-	context += "You %s %s. (Trust: %d, Affection: %d, Respect: %d) " % [
-		rel_label, other_npc.npc_name, rel["trust"], rel["affection"], rel["respect"]
-	]
+	# Relationship with conversation partner (per-dimension labels)
+	var trust_l: String = Relationships.get_trust_label(npc_name, other_npc.npc_name)
+	var affec_l: String = Relationships.get_affection_label(npc_name, other_npc.npc_name)
+	var respe_l: String = Relationships.get_respect_label(npc_name, other_npc.npc_name)
+	context += "You %s %s, %s them, and %s them. " % [trust_l, other_npc.npc_name, affec_l, respe_l]
 
 	# Your current state
 	if hunger < 40.0:
@@ -2111,15 +2265,14 @@ func _share_gossip_with(receiver_npc: CharacterBody2D, original_memory: Dictiona
 	# Sharing gossip builds trust slightly (intimacy of shared secrets)
 	Relationships.modify_mutual(npc_name, receiver_npc.npc_name, 1, 0, 0)
 
-	# Gossip affects receiver's opinion of the subject
+	# Gossip affects receiver's trust toward the subject (valence-proportional)
 	var valence: float = original_memory.get("emotional_valence", 0.0)
 	if about != "" and about != receiver_npc.npc_name:
-		if valence < -0.2:
-			# Negative gossip — reduces trust/affection toward the subject
-			Relationships.modify(receiver_npc.npc_name, about, -2, -1, -1)
-		elif valence > 0.2:
-			# Positive gossip — slightly increases opinion of the subject
-			Relationships.modify(receiver_npc.npc_name, about, 1, 1, 0)
+		var impact: int = clampi(int(valence * 2.0), -3, 3)
+		if impact != 0:
+			Relationships.modify(receiver_npc.npc_name, about, impact, 0, 0)
+			if OS.is_debug_build():
+				print("[Gossip Impact] %s heard about %s → Trust %+d" % [receiver_npc.npc_name, about, impact])
 
 	if OS.is_debug_build():
 		print("[Gossip] %s told %s: '%s' (hop %d, importance %.1f)" % [

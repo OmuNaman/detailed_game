@@ -39,6 +39,36 @@ func get_opinion_label(from_name: String, to_name: String) -> String:
 	return "despises"
 
 
+func get_trust_label(from_name: String, to_name: String) -> String:
+	## Per-dimension label for trust.
+	var val: int = get_relationship(from_name, to_name)["trust"]
+	if val <= -50: return "deeply distrust"
+	if val <= -15: return "are suspicious of"
+	if val <= 14: return "feel neutral about"
+	if val <= 49: return "trust somewhat"
+	return "trust deeply"
+
+
+func get_affection_label(from_name: String, to_name: String) -> String:
+	## Per-dimension label for affection.
+	var val: int = get_relationship(from_name, to_name)["affection"]
+	if val <= -50: return "are cold toward"
+	if val <= -15: return "are indifferent to"
+	if val <= 14: return "feel neutral about"
+	if val <= 49: return "are fond of"
+	return "deeply care about"
+
+
+func get_respect_label(from_name: String, to_name: String) -> String:
+	## Per-dimension label for respect.
+	var val: int = get_relationship(from_name, to_name)["respect"]
+	if val <= -50: return "look down on"
+	if val <= -15: return "have little respect for"
+	if val <= 14: return "feel neutral about"
+	if val <= 49: return "respect"
+	return "deeply respect and admire"
+
+
 func modify(from_name: String, to_name: String, trust_delta: int = 0,
 		affection_delta: int = 0, respect_delta: int = 0) -> void:
 	## Adjust relationship scores. Clamped to -100..100.
