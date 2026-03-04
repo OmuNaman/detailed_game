@@ -21,6 +21,8 @@ const STABILITY_BY_TYPE: Dictionary = {
 	"gossip_heard": 18.0,
 	"gossip_shared": 12.0,
 	"player_dialogue": 48.0,
+	"episode_summary": 168.0,
+	"period_summary": 336.0,
 }
 
 const RETRIEVAL_WEIGHT_RELEVANCE: float = 0.5
@@ -30,6 +32,18 @@ const MAX_STABILITY: float = 500.0
 const TESTING_EFFECT_MULTIPLIER: float = 1.1
 const MAX_KEY_FACTS: int = 10
 const MAX_NPC_SUMMARIES: int = 5
+
+# Compression constants
+const COMPRESSION_BATCH_SIZE: int = 30
+const COMPRESSION_MIN_BATCH: int = 10
+const EPISODE_COMPRESSION_THRESHOLD: int = 10
+const PERIOD_COMPRESSION_BATCH: int = 7
+
+# Forgetting constants
+const FORGETTING_RATE_OBSERVATION: float = 0.7
+const FORGETTING_RATE_OTHER: float = 0.85
+const MIN_STABILITY: float = 1.0
+const EFFECTIVELY_FORGOTTEN_THRESHOLD: float = 0.05
 
 # --- Tier 0: Core Memory ---
 
@@ -170,7 +184,7 @@ func create_memory(text: String, type: String, entities: Array[String],
 		"observation_count": 1,
 		"stability": stability,
 		"embedding": PackedFloat32Array(),
-		"protected": clamped_importance >= 8.0 or type == "player_dialogue",
+		"protected": clamped_importance >= 8.0 or type == "player_dialogue" or type == "reflection",
 		"superseded": false,
 		"shared_with": [],
 		"source_memory_id": "",
@@ -462,6 +476,128 @@ func add_key_fact(fact: String) -> void:
 func set_active_goals(goals: Array) -> void:
 	core_memory["active_goals"] = goals
 	# Don't save for ephemeral goals (daily plans)
+
+
+# --- Compression ---
+
+func get_compression_candidates(batch_size: int = COMPRESSION_BATCH_SIZE) -> Array[Dictionary]:
+	## Returns oldest non-protected, non-summarized, non-superseded raw memories.
+	var candidates: Array[Dictionary] = []
+	for mem: Dictionary in episodic_memories:
+		if mem.get("summary_level", 0) == 0 and not mem.get("protected", false) and not mem.get("superseded", false):
+			candidates.append(mem)
+	candidates.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
+		return a.get("timestamp", 0) < b.get("timestamp", 0)
+	)
+	return candidates.slice(0, mini(batch_size, candidates.size()))
+
+
+func apply_episode_compression(batch: Array[Dictionary], summary_text: String) -> Dictionary:
+	## Creates a Level 1 episode summary in archival, removes source memories from episodic.
+	## Returns the summary memory (caller should queue embedding).
+	var entities: Array[String] = _extract_entities_from_batch(batch)
+	var avg_imp: float = _average_importance(batch)
+	var avg_val: float = _average_valence(batch)
+
+	var summary_mem: Dictionary = create_memory(
+		summary_text, "episode_summary", entities,
+		batch[0].get("location", ""), avg_imp, avg_val
+	)
+	summary_mem["summary_level"] = 1
+	summary_mem["protected"] = true
+	summary_mem["game_day"] = batch[0].get("game_day", 0)
+	summary_mem["game_hour"] = batch[0].get("game_hour", 0)
+
+	archival_summaries.append(summary_mem)
+	for mem: Dictionary in batch:
+		episodic_memories.erase(mem)
+
+	return summary_mem
+
+
+func get_episode_summary_candidates() -> Array[Dictionary]:
+	## Returns Level 1 episode summaries from archival, sorted oldest first.
+	var episodes: Array[Dictionary] = []
+	for mem: Dictionary in archival_summaries:
+		if mem.get("summary_level", 0) == 1:
+			episodes.append(mem)
+	episodes.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
+		return a.get("timestamp", 0) < b.get("timestamp", 0)
+	)
+	return episodes
+
+
+func apply_period_compression(batch: Array[Dictionary], summary_text: String) -> Dictionary:
+	## Creates a Level 2 period summary in archival, removes source episode summaries.
+	## Returns the period summary memory (caller should queue embedding).
+	var entities: Array[String] = _extract_entities_from_batch(batch)
+	var avg_imp: float = _average_importance(batch)
+	var avg_val: float = _average_valence(batch)
+
+	var period_mem: Dictionary = create_memory(
+		summary_text, "period_summary", entities,
+		"", avg_imp, avg_val
+	)
+	period_mem["summary_level"] = 2
+	period_mem["protected"] = true
+
+	archival_summaries.append(period_mem)
+	for mem: Dictionary in batch:
+		archival_summaries.erase(mem)
+
+	return period_mem
+
+
+# --- Forgetting Curves ---
+
+func apply_daily_forgetting() -> void:
+	## Decay stability for non-protected episodic memories. Called once per game day.
+	## Observations/environment decay faster (×0.7) than other types (×0.85).
+	## Memories with very low recency are marked as effectively forgotten.
+	var current_time: int = GameClock.total_minutes
+	for mem: Dictionary in episodic_memories:
+		if mem.get("protected", false):
+			continue
+
+		var mem_type: String = mem.get("type", "")
+		if mem.get("access_count", 0) == 0 and (mem_type == "observation" or mem_type == "environment"):
+			mem["stability"] = maxf(mem.get("stability", 12.0) * FORGETTING_RATE_OBSERVATION, MIN_STABILITY)
+		elif mem.get("access_count", 0) == 0:
+			mem["stability"] = maxf(mem.get("stability", 12.0) * FORGETTING_RATE_OTHER, MIN_STABILITY)
+
+		# Check if effectively forgotten (recency score < threshold)
+		var hours: float = (float(current_time) - float(mem.get("last_accessed", mem.get("timestamp", 0)))) / 60.0
+		var S: float = maxf(mem.get("stability", 12.0), 0.1)
+		var recency: float = pow(1.0 + 0.234 * hours / S, -0.5)
+		if recency < EFFECTIVELY_FORGOTTEN_THRESHOLD:
+			mem["effectively_forgotten"] = true
+
+
+# --- Compression / Forgetting Helpers ---
+
+func _extract_entities_from_batch(batch: Array[Dictionary]) -> Array[String]:
+	var entity_set: Dictionary = {}
+	for mem: Dictionary in batch:
+		for e: Variant in mem.get("entities", mem.get("participants", [])):
+			entity_set[str(e)] = true
+	var result: Array[String] = []
+	for key: String in entity_set:
+		result.append(key)
+	return result
+
+
+func _average_importance(batch: Array[Dictionary]) -> float:
+	var total: float = 0.0
+	for mem: Dictionary in batch:
+		total += mem.get("importance", 1.0)
+	return total / maxf(float(batch.size()), 1.0)
+
+
+func _average_valence(batch: Array[Dictionary]) -> float:
+	var total: float = 0.0
+	for mem: Dictionary in batch:
+		total += mem.get("emotional_valence", 0.0)
+	return total / maxf(float(batch.size()), 1.0)
 
 
 # --- Context Assembly ---
