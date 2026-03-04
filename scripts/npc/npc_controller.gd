@@ -2990,13 +2990,14 @@ func _detect_third_party_mentions(speaker_name: String, line_text: String, liste
 				desc = desc.substr(0, 197) + "..."
 
 			# Add as gossip-type memory to the listener
-			var mem: Dictionary = listener.memory.create_memory(
-				desc, "gossip",
+			var mem: Dictionary = listener.memory.add_memory(
+				desc, "gossip", speaker_name,
 				[speaker_name, mentioned_name, listener.npc_name] as Array[String],
-				listener._current_destination, importance, 0.0,
-				{"gossip_source": speaker_name, "gossip_hops": 1}
+				listener._current_destination, listener._current_destination,
+				importance, 0.0
 			)
-			listener.memory.add_memory(mem)
+			mem["gossip_source"] = speaker_name
+			mem["gossip_hops"] = 1
 			if OS.is_debug_build():
 				print("[Diffusion] %s heard %s mention %s" % [listener.npc_name, speaker_name, mentioned_name])
 
