@@ -60,6 +60,10 @@ func start_conversation(npc: CharacterBody2D) -> void:
 func hide_dialogue() -> void:
 	_panel.visible = false
 	is_showing = false
+
+	# Notify NPC to create conversation summary memory
+	if _current_npc and _current_npc.has_method("on_player_conversation_ended"):
+		_current_npc.on_player_conversation_ended()
 	_current_npc = null
 
 	# Re-enable player movement

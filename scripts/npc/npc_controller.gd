@@ -111,6 +111,12 @@ var _daily_plan: Array[Dictionary] = []  # [{hour, end_hour, destination, reason
 var _last_plan_day: int = -1
 var _planning_in_progress: bool = false
 
+# Working memory — player conversation tracked for summary on end
+var _player_conv_history: Array[Dictionary] = []  # [{speaker, text}]
+
+# Emotional state decay tracking
+var _last_significant_event_time: int = 0
+
 @onready var sprite: Sprite2D = $Sprite2D
 @onready var name_label: Label = $NameLabel
 
@@ -630,6 +636,7 @@ Write ONLY the insights, nothing else.""" % [
 			# Update emotional state from last insight
 			if not insights.is_empty():
 				memory.update_emotional_state(insights[-1].left(150))
+				_last_significant_event_time = GameClock.total_minutes
 
 			print("[Reflect] %s: %d insights from question" % [npc_name, insights.size()])
 
@@ -935,6 +942,18 @@ func _build_planning_context() -> String:
 			context += "- %s\n" % mem.get("description", "")
 		context += "\n"
 
+	# Core memory: what I know about specific people
+	var plan_npc_summaries: Dictionary = memory.core_memory.get("npc_summaries", {})
+	if not plan_npc_summaries.is_empty():
+		context += "What you know about people:\n"
+		for summ_name: String in plan_npc_summaries:
+			context += "- %s: %s\n" % [summ_name, plan_npc_summaries[summ_name]]
+		context += "\n"
+
+	var plan_player_summary: String = memory.core_memory.get("player_summary", "")
+	if plan_player_summary != "" and not plan_player_summary.begins_with("I haven't met"):
+		context += "About %s: %s\n\n" % [PlayerProfile.player_name, plan_player_summary]
+
 	context += "What 2-4 specific things do you want to do today beyond your normal routine? Format: HOUR|DESTINATION|REASON"
 	return context
 
@@ -1060,6 +1079,17 @@ func _on_hour_changed(hour: int) -> void:
 		_conv_counts_today.clear()
 		_run_midnight_maintenance()
 
+	# Emotional state decay: 3+ quiet hours → drift to neutral
+	if _last_significant_event_time > 0:
+		var quiet_hours: float = float(GameClock.total_minutes - _last_significant_event_time) / 60.0
+		if quiet_hours >= 3.0:
+			var current_emotion: String = memory.core_memory.get("emotional_state", "")
+			if current_emotion != "" and not current_emotion.begins_with("Feeling neutral"):
+				memory.update_emotional_state("Feeling neutral, going about the day.")
+				_last_significant_event_time = 0
+				if OS.is_debug_build():
+					print("[Emotion] %s: Mood decayed to neutral after %.1f quiet hours" % [npc_name, quiet_hours])
+
 	# Instant hunger restoration at meal times if at home
 	if _current_destination == home_building and hour in [7, 12, 19]:
 		hunger = minf(hunger + 30.0, 100.0)
@@ -1133,6 +1163,9 @@ func get_dialogue_response_async(callback: Callable) -> void:
 	if player:
 		_face_toward(player.global_position)
 
+	# Initialize working memory for this conversation
+	_player_conv_history.clear()
+
 	if not GeminiClient.has_api_key():
 		callback.call(_get_template_response())
 		return
@@ -1157,14 +1190,22 @@ func get_dialogue_response_async(callback: Callable) -> void:
 
 func get_conversation_reply_async(player_message: String, history: Array[Dictionary], callback: Callable) -> void:
 	## Generate a reply considering full conversation history.
+	## Uses player's message as retrieval query for targeted memory recall.
 	if not GeminiClient.has_api_key():
 		callback.call(_get_template_response())
 		return
 
+	# Track conversation for summary on end
+	_player_conv_history = history.duplicate()
+
 	var system_prompt: String = _build_system_prompt()
-	var context: String = _build_dialogue_context()
-	context += "\n\nConversation so far:\n"
-	for msg: Dictionary in history:
+	var context: String = _build_dialogue_context_for_reply(player_message)
+
+	# Working memory — last 6 turns
+	context += "\nConversation so far:\n"
+	var window_start: int = maxi(history.size() - 6, 0)
+	for i: int in range(window_start, history.size()):
+		var msg: Dictionary = history[i]
 		context += "%s: \"%s\"\n" % [msg["speaker"], msg["text"]]
 	context += "\n%s just said: \"%s\"\n" % [PlayerProfile.player_name, player_message]
 	context += "\nRespond naturally in character. 1-3 sentences. Continue the conversation based on what %s said." % PlayerProfile.player_name
@@ -1224,8 +1265,30 @@ func _build_system_prompt() -> String:
 		prompt += "Key relationships: %s.\n\n" % ", ".join(rel_lines)
 
 	prompt += "There is a newcomer in town named %s. They recently moved into House 11 on the south row. They seem curious about the town and its people.\n\n" % PlayerProfile.player_name
-	prompt += "Rules:\n- Respond in character, first person, 1-3 sentences only\n- Never break character or mention being an AI\n- Let your personality shine through every word\n- Reference your memories naturally if relevant\n- Your mood and needs should affect how you talk\n- You can ask %s questions too — be curious about the newcomer\n- React to what they say, don't just give generic responses" % PlayerProfile.player_name
+	prompt += "Rules:\n- Respond in character, first person, 1-3 sentences only\n- Never break character or mention being an AI\n- Let your personality shine through every word\n- Reference your memories naturally if relevant\n- Your mood and needs should affect how you talk\n- You can ask %s questions too — be curious about the newcomer\n- React to what they say, don't just give generic responses\n- If someone asks about past events, rely on your memories. If you don't remember, say so honestly — never make up events." % PlayerProfile.player_name
 	return prompt
+
+
+func _format_memory_age(mem: Dictionary) -> String:
+	## Returns human-readable age label for a memory.
+	var mem_time: int = mem.get("timestamp", mem.get("game_time", 0))
+	var minutes_ago: int = maxi(GameClock.total_minutes - mem_time, 0)
+	var hours_ago: int = minutes_ago / 60
+	var days_ago: int = minutes_ago / 1440
+	if minutes_ago < 30:
+		return "(just now)"
+	elif hours_ago < 1:
+		return "(%d min ago)" % minutes_ago
+	elif hours_ago < 6:
+		return "(%d hours ago)" % hours_ago
+	elif days_ago < 1:
+		return "(today)"
+	elif days_ago < 2:
+		return "(yesterday)"
+	elif days_ago < 7:
+		return "(%d days ago)" % days_ago
+	else:
+		return "(over a week ago)"
 
 
 func _build_dialogue_context() -> String:
@@ -1276,51 +1339,26 @@ func _build_dialogue_context() -> String:
 		if not active_objects.is_empty():
 			context += "Around you: %s.\n\n" % ", ".join(active_objects)
 
-	# Retrieve top 5 recent memories
-	var recent_memories: Array[Dictionary] = memory.get_recent(5)
-	if not recent_memories.is_empty():
-		context += "Your recent memories:\n"
-		for mem: Dictionary in recent_memories:
-			var hours_ago: int = maxi((GameClock.total_minutes - mem.get("game_time", 0)) / 60, 0)
-			var time_str: String = "%d hours ago" % hours_ago if hours_ago > 0 else "just now"
-			context += "- %s: %s\n" % [time_str, mem.get("description", "")]
-		context += "\n"
-
-	# Include recent reflections (insights) for richer dialogue
-	var reflections: Array[Dictionary] = memory.get_by_type("reflection")
-	if not reflections.is_empty():
-		reflections.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
-			return a.get("game_time", 0) > b.get("game_time", 0)
-		)
-		var recent_reflections: Array[Dictionary] = reflections.slice(0, mini(3, reflections.size()))
-		context += "Your recent thoughts and realizations:\n"
-		for ref: Dictionary in recent_reflections:
-			context += "- %s\n" % ref.get("description", "")
-		context += "\n"
-
-	# Include notable environment observations
-	var env_memories: Array[Dictionary] = memory.get_by_type("environment")
-	if not env_memories.is_empty():
-		env_memories.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
-			return a.get("game_time", 0) > b.get("game_time", 0)
-		)
-		var recent_env: Array[Dictionary] = env_memories.slice(0, mini(3, env_memories.size()))
-		var env_strs: Array[String] = []
-		for mem: Dictionary in recent_env:
-			env_strs.append(mem.get("description", ""))
-		if not env_strs.is_empty():
-			context += "Things you've noticed around town: %s.\n\n" % ". ".join(env_strs)
-
-	# Gossip the NPC has heard — may come up in conversation
-	var gossip_memories: Array[Dictionary] = memory.get_by_type("gossip")
-	if not gossip_memories.is_empty():
-		gossip_memories.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
-			return a.get("game_time", 0) > b.get("game_time", 0)
-		)
-		var recent_gossip: Array[Dictionary] = gossip_memories.slice(0, mini(2, gossip_memories.size()))
-		context += "Things you've heard from others:\n"
-		for g: Dictionary in recent_gossip:
-			context += "- %s\n" % g.get("description", "")
+	# RETRIEVAL-BASED MEMORIES (replaces 4 separate get_by_type calls)
+	var retrieval_query: String = "%s talking with %s at the %s" % [
+		npc_name, PlayerProfile.player_name, _current_destination]
+	var retrieved: Array[Dictionary] = memory.retrieve_by_query_text(
+		retrieval_query, GameClock.total_minutes, 8)
+	if not retrieved.is_empty():
+		context += "Your relevant memories:\n"
+		for mem: Dictionary in retrieved:
+			var age_label: String = _format_memory_age(mem)
+			var mem_type: String = mem.get("type", "")
+			var prefix: String = ""
+			if mem_type == "reflection":
+				prefix = "[Thought] "
+			elif mem_type == "gossip":
+				prefix = "[Heard] "
+			elif mem_type == "environment":
+				prefix = "[Noticed] "
+			elif mem_type == "episode_summary" or mem_type == "period_summary":
+				prefix = "[Summary] "
+			context += "- %s%s %s\n" % [prefix, mem.get("text", mem.get("description", "")), age_label]
 		context += "\n"
 
 	# Specifically surface gossip about the player
@@ -1349,6 +1387,105 @@ func _build_dialogue_context() -> String:
 		context += "\n"
 
 	context += "%s is standing in front of you and wants to talk. They recently moved to DeepTown and live in House 11. Respond naturally." % PlayerProfile.player_name
+	return context
+
+
+func _build_dialogue_context_for_reply(player_message: String) -> String:
+	## Builds dialogue context using the player's message as the retrieval query.
+	## Called during multi-turn conversation replies for targeted memory recall.
+	var hour: int = GameClock.hour
+	var period: String = "night"
+	if hour >= 5 and hour < 8:
+		period = "dawn"
+	elif hour >= 8 and hour < 12:
+		period = "morning"
+	elif hour >= 12 and hour < 17:
+		period = "afternoon"
+	elif hour >= 17 and hour < 21:
+		period = "evening"
+
+	var mood: float = get_mood()
+	var mood_desc: String = "miserable" if mood < 20.0 else "unhappy" if mood < 40.0 else "okay" if mood < 60.0 else "good" if mood < 80.0 else "great"
+
+	var activity_str: String = current_activity if current_activity != "" else "standing around"
+	var context: String = "Current situation: It is %s (%s). You are at the %s. You are currently %s. Your mood is %s (%d/100).\n\n" % [
+		GameClock.get_time_string(), period, _current_destination, activity_str, mood_desc, int(mood)
+	]
+
+	context += "Your needs:\n"
+	context += "- Hunger: %d/100 %s\n" % [int(hunger), "(starving!)" if hunger < 20.0 else "(hungry)" if hunger < 40.0 else "(fine)"]
+	context += "- Energy: %d/100 %s\n" % [int(energy), "(exhausted!)" if energy < 20.0 else "(tired)" if energy < 40.0 else "(fine)"]
+	context += "- Social: %d/100 %s\n\n" % [int(social), "(lonely)" if social < 30.0 else "(could use company)" if social < 50.0 else "(content)"]
+
+	# Relationship with the player (per-dimension descriptions)
+	var trust_label: String = Relationships.get_trust_label(npc_name, PlayerProfile.player_name)
+	var affec_label: String = Relationships.get_affection_label(npc_name, PlayerProfile.player_name)
+	var respe_label: String = Relationships.get_respect_label(npc_name, PlayerProfile.player_name)
+	context += "Your relationship with %s (the person you're talking to):\n" % PlayerProfile.player_name
+	context += "- Trust: You %s them\n" % trust_label
+	context += "- Affection: You %s them\n" % affec_label
+	context += "- Respect: You %s them\n" % respe_label
+	var player_core_summary: String = memory.core_memory.get("player_summary", "")
+	if player_core_summary != "":
+		context += "- Your feelings: %s\n" % player_core_summary
+	context += "\nRespond naturally based on these feelings. Low trust = guarded. High affection = warm. Negative respect = dismissive. Never mention numbers.\n\n"
+
+	# Nearby object states
+	var building_objects: Array[Dictionary] = WorldObjects.get_objects_in_building(_current_destination)
+	if not building_objects.is_empty():
+		var active_objects: Array[String] = []
+		for obj: Dictionary in building_objects:
+			if obj["state"] != "idle":
+				active_objects.append("the %s is %s" % [obj["tile_type"], obj["state"]])
+		if not active_objects.is_empty():
+			context += "Around you: %s.\n\n" % ", ".join(active_objects)
+
+	# TARGETED RETRIEVAL using player's actual message
+	var retrieved: Array[Dictionary] = memory.retrieve_by_query_text(
+		player_message, GameClock.total_minutes, 8)
+	if not retrieved.is_empty():
+		context += "Your relevant memories:\n"
+		for mem: Dictionary in retrieved:
+			var age_label: String = _format_memory_age(mem)
+			var mem_type: String = mem.get("type", "")
+			var prefix: String = ""
+			if mem_type == "reflection":
+				prefix = "[Thought] "
+			elif mem_type == "gossip":
+				prefix = "[Heard] "
+			elif mem_type == "environment":
+				prefix = "[Noticed] "
+			elif mem_type == "episode_summary" or mem_type == "period_summary":
+				prefix = "[Summary] "
+			context += "- %s%s %s\n" % [prefix, mem.get("text", mem.get("description", "")), age_label]
+		context += "\n"
+
+	# Specifically surface gossip about the player
+	var player_gossip: Array[Dictionary] = []
+	for g: Dictionary in memory.get_by_type("gossip"):
+		if g.get("actor", "") == PlayerProfile.player_name:
+			player_gossip.append(g)
+	if not player_gossip.is_empty():
+		player_gossip.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
+			return a.get("game_time", 0) > b.get("game_time", 0)
+		)
+		context += "You've heard things about this person from others:\n"
+		for pg: Dictionary in player_gossip.slice(0, mini(3, player_gossip.size())):
+			context += "- %s\n" % pg.get("description", "")
+		context += "\n"
+
+	# Today's plans
+	var upcoming_plans: Array[String] = []
+	for plan: Dictionary in _daily_plan:
+		if not plan["completed"]:
+			upcoming_plans.append("At %d:00 — %s at the %s" % [plan["hour"], plan["reason"], plan["destination"]])
+	if not upcoming_plans.is_empty():
+		context += "Your plans for today:\n"
+		for p: String in upcoming_plans:
+			context += "- %s\n" % p
+		context += "\n"
+
+	context += "%s is talking to you right now." % PlayerProfile.player_name
 	return context
 
 
@@ -1404,6 +1541,9 @@ func _apply_player_impact(raw_json: String) -> void:
 	else:
 		# Pure small talk — tiny trust bump for showing up
 		Relationships.modify(npc_name, PlayerProfile.player_name, 1, 0, 0)
+
+	# Mark significant event for emotional decay tracking
+	_last_significant_event_time = GameClock.total_minutes
 
 	# Update core memory
 	var new_emotion: String = data.get("emotional_state", "")
@@ -1516,6 +1656,79 @@ func _update_npc_summary_async(other_name: String, my_line: String, their_line: 
 				if OS.is_debug_build():
 					print("[Memory] %s updated summary of %s: %s" % [npc_name, other_name, text.strip_edges().left(80)]),
 		GeminiClient.MODEL_LITE
+	)
+
+
+func on_player_conversation_ended() -> void:
+	## Called by dialogue_box.gd when the player closes the conversation.
+	## Creates a summary memory of the entire conversation.
+	if _player_conv_history.is_empty():
+		return
+
+	var history_copy: Array[Dictionary] = _player_conv_history.duplicate()
+	_player_conv_history.clear()
+
+	# Mark significant event for emotional decay
+	_last_significant_event_time = GameClock.total_minutes
+
+	# Short conversation (4 or fewer turns): simple concatenation summary
+	if history_copy.size() <= 4:
+		var summary_parts: Array[String] = []
+		for msg: Dictionary in history_copy:
+			summary_parts.append("%s: \"%s\"" % [msg["speaker"], str(msg["text"]).left(50)])
+		var summary: String = "Conversation with %s at the %s. %s" % [
+			PlayerProfile.player_name, _current_destination,
+			". ".join(summary_parts).left(200)]
+		_add_memory_with_embedding(
+			summary, "player_dialogue", PlayerProfile.player_name,
+			[npc_name, PlayerProfile.player_name] as Array[String],
+			_current_destination, _current_destination, 8.0, 0.3
+		)
+		if OS.is_debug_build():
+			print("[ConvSummary] %s: Short conversation summary stored" % npc_name)
+		return
+
+	# Longer conversation: use Gemini Flash to summarize
+	if not GeminiClient.has_api_key():
+		_add_memory_with_embedding(
+			"Had a long conversation with %s at the %s about various topics" % [
+				PlayerProfile.player_name, _current_destination],
+			"player_dialogue", PlayerProfile.player_name,
+			[npc_name, PlayerProfile.player_name] as Array[String],
+			_current_destination, _current_destination, 8.0, 0.2
+		)
+		return
+
+	_summarize_player_conversation(history_copy)
+
+
+func _summarize_player_conversation(history: Array[Dictionary]) -> void:
+	## Use Gemini Flash to create a dense summary of a player conversation.
+	var transcript: String = ""
+	for msg: Dictionary in history:
+		transcript += "%s: \"%s\"\n" % [msg["speaker"], str(msg["text"]).left(80)]
+
+	var prompt: String = "Summarize this conversation between %s and %s in 2-3 sentences from %s's perspective (first person).\nFocus on: what was discussed, any promises made, emotional tone, anything important learned.\n\nConversation:\n%s\nWrite ONLY the summary, nothing else." % [
+		npc_name, PlayerProfile.player_name, npc_name, transcript]
+
+	GeminiClient.generate(
+		"You summarize conversations for %s. Write in first person as %s." % [npc_name, npc_name],
+		prompt,
+		func(text: String, success: bool) -> void:
+			var summary: String
+			if success and text != "":
+				summary = text.strip_edges().left(300)
+			else:
+				summary = "Had a conversation with %s at the %s" % [
+					PlayerProfile.player_name, _current_destination]
+
+			_add_memory_with_embedding(
+				summary, "player_dialogue", PlayerProfile.player_name,
+				[npc_name, PlayerProfile.player_name] as Array[String],
+				_current_destination, _current_destination, 8.0, 0.3
+			)
+			if OS.is_debug_build():
+				print("[ConvSummary] %s: \"%s\"" % [npc_name, summary.left(100)])
 	)
 
 
@@ -1973,44 +2186,19 @@ func _build_npc_chat_context(other_npc: CharacterBody2D, topic: String, their_li
 	if social > 80.0:
 		context += "You're in a great mood. "
 
-	# Recent relevant memories (top 3)
-	var recent: Array[Dictionary] = memory.get_recent(3)
-	if not recent.is_empty():
-		context += "Recent memories: "
-		for mem: Dictionary in recent:
-			context += mem.get("description", "") + ". "
+	# Retrieval-based memories relevant to this conversation
+	var retrieval_query: String = "talking with %s at the %s" % [other_npc.npc_name, _current_destination]
+	var retrieved: Array[Dictionary] = memory.retrieve_by_query_text(
+		retrieval_query, GameClock.total_minutes, 5)
+	if not retrieved.is_empty():
+		context += "Relevant memories: "
+		for mem: Dictionary in retrieved:
+			context += "%s %s. " % [mem.get("text", mem.get("description", "")), _format_memory_age(mem)]
 
-	# Recent reflections (top 2)
-	var reflections: Array[Dictionary] = memory.get_by_type("reflection")
-	if not reflections.is_empty():
-		reflections.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
-			return a.get("game_time", 0) > b.get("game_time", 0)
-		)
-		for ref: Dictionary in reflections.slice(0, mini(2, reflections.size())):
-			context += "You've been thinking: %s " % ref.get("description", "")
-
-	# Shared environment context
-	var env_memories: Array[Dictionary] = memory.get_by_type("environment")
-	if not env_memories.is_empty():
-		env_memories.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
-			return a.get("game_time", 0) > b.get("game_time", 0)
-		)
-		var latest_env: Dictionary = env_memories[0]
-		var hours_ago: int = (GameClock.total_minutes - latest_env.get("game_time", 0)) / 60
-		if hours_ago < 6:
-			context += "Earlier you noticed: %s. " % latest_env.get("description", "")
-
-	# Gossip awareness — things you've heard about people
-	var gossip_memories: Array[Dictionary] = memory.get_by_type("gossip")
-	if not gossip_memories.is_empty():
-		gossip_memories.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
-			return a.get("game_time", 0) > b.get("game_time", 0)
-		)
-		var recent_gossip: Array[Dictionary] = gossip_memories.slice(0, mini(2, gossip_memories.size()))
-		var gossip_strs: Array[String] = []
-		for g: Dictionary in recent_gossip:
-			gossip_strs.append(g.get("description", ""))
-		context += "Things you've heard recently: %s. " % ". ".join(gossip_strs)
+	# NPC summary for conversation partner (from core memory)
+	var npc_summaries: Dictionary = memory.core_memory.get("npc_summaries", {})
+	if npc_summaries.has(other_npc.npc_name):
+		context += "What you know about %s: %s " % [other_npc.npc_name, npc_summaries[other_npc.npc_name]]
 
 	# The conversation setup
 	if their_line == "":
@@ -2432,6 +2620,9 @@ func _share_gossip_with(receiver_npc: CharacterBody2D, original_memory: Dictiona
 
 	# Sharing gossip builds trust slightly (intimacy of shared secrets)
 	Relationships.modify_mutual(npc_name, receiver_npc.npc_name, 1, 0, 0)
+
+	# Mark as significant event for the receiver (emotional decay tracking)
+	receiver_npc._last_significant_event_time = GameClock.total_minutes
 
 	# Gossip affects receiver's trust toward the subject (valence-proportional)
 	var valence: float = original_memory.get("emotional_valence", 0.0)

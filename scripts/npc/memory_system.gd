@@ -388,6 +388,63 @@ func retrieve_by_keywords(keywords: Array[String], current_time: int,
 	return results
 
 
+func retrieve_by_query_text(query: String, current_time: int,
+		count: int = 8) -> Array[Dictionary]:
+	## Convenience: extract keywords from free text, search episodic + archival.
+	## Unlike retrieve_by_keywords, this searches BOTH tiers and handles keyword extraction.
+	var stop_words: Array[String] = ["the", "and", "was", "with", "that", "this", "from",
+		"they", "their", "have", "been", "what", "about", "there", "would", "said",
+		"just", "near", "here", "some", "will", "also", "very", "like", "when", "only",
+		"your", "into", "more", "than", "then", "does", "which", "could", "should", "were"]
+	var keywords: Array[String] = []
+	for w: String in query.split(" "):
+		var lower: String = w.to_lower().strip_edges()
+		lower = lower.replace(".", "").replace(",", "").replace("?", "").replace("!", "").replace("\"", "")
+		if lower.length() > 2 and lower not in stop_words:
+			keywords.append(lower)
+	keywords = keywords.slice(0, mini(10, keywords.size()))
+	if keywords.is_empty():
+		return get_recent(count)
+
+	# Search both tiers (retrieve_by_keywords only does episodic)
+	var all_memories: Array[Dictionary] = episodic_memories.duplicate()
+	all_memories.append_array(archival_summaries)
+
+	var scored: Array[Dictionary] = []
+	for mem: Dictionary in all_memories:
+		if mem.get("superseded", false):
+			continue
+		var hours_since: float = maxf((float(current_time) - float(mem.get("timestamp", mem.get("game_time", 0)))) / 60.0, 0.0)
+		var S: float = mem.get("stability", 12.0)
+		var recency: float = pow(1.0 + 0.234 * hours_since / maxf(S, 0.1), -0.5)
+		var importance_score: float = mem.get("importance", 1.0) / 10.0
+
+		var desc_lower: String = mem.get("text", mem.get("description", "")).to_lower()
+		var match_count: int = 0
+		for kw: String in keywords:
+			if desc_lower.contains(kw):
+				match_count += 1
+		var relevance: float = float(match_count) / float(keywords.size())
+
+		# Archival summaries get 1.1x boost (same as retrieve_memories)
+		var boost: float = 1.1 if mem.get("summary_level", 0) > 0 else 1.0
+		var final_score: float = (RETRIEVAL_WEIGHT_RELEVANCE * relevance + RETRIEVAL_WEIGHT_RECENCY * recency + RETRIEVAL_WEIGHT_IMPORTANCE * importance_score) * boost
+		scored.append({"memory": mem, "score": final_score})
+
+	scored.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
+		return a["score"] > b["score"]
+	)
+
+	var results: Array[Dictionary] = []
+	for i: int in range(mini(count, scored.size())):
+		var mem: Dictionary = scored[i]["memory"]
+		mem["last_accessed"] = current_time
+		mem["access_count"] = mem.get("access_count", 0) + 1
+		mem["stability"] = minf(mem.get("stability", 12.0) * TESTING_EFFECT_MULTIPLIER, MAX_STABILITY)
+		results.append(mem)
+	return results
+
+
 # --- Backward-compatible accessors (match old MemoryStream API) ---
 
 var memories: Array[Dictionary]:
