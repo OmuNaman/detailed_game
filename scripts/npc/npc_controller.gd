@@ -39,6 +39,11 @@ const EMBEDDING_BATCH_SIZE: int = 10
 var _last_conversation_time: Dictionary = {}  # {npc_name: game_time}
 const CONVERSATION_COOLDOWN: int = 120  # 2 game hours between conversations with same NPC
 
+# Bug 7: Conversation spam prevention
+var _conv_counts_today: Dictionary = {}      # "A:B" -> int
+const MAX_CONV_PER_PAIR_PER_DAY: int = 3
+const COOLDOWN_COHABIT_MINUTES: int = 240    # 4 game hours for cohabitants
+
 # Random visit tracking
 var _next_visit_check: int = 0
 
@@ -92,6 +97,10 @@ var _reflection_cooldown: bool = false  # Prevent double-triggers
 # Environment perception
 var _last_environment_scan: int = -120  # Start cold so first scan triggers
 const ENVIRONMENT_SCAN_INTERVAL: int = 30  # Every 30 game minutes
+
+# Bug 9: Minimum stay duration at destinations
+var _dest_arrival_time: int = -1
+const MIN_STAY_MINUTES: int = 60
 
 # Daily planning
 var _daily_plan: Array[Dictionary] = []  # [{hour, end_hour, destination, reason, completed}]
@@ -165,6 +174,9 @@ func _ready() -> void:
 	# Initial destination based on current hour
 	_update_destination(GameClock.hour)
 
+	# Bug 8: Late planning trigger — if loaded after hour 5, still generate today's plan
+	call_deferred("_check_planning_on_load")
+
 
 func _physics_process(delta: float) -> void:
 	if not _is_moving or _path.is_empty():
@@ -215,6 +227,7 @@ func _arrive() -> void:
 	_is_moving = false
 	_path = PackedVector2Array()
 	velocity = Vector2.ZERO
+	_dest_arrival_time = GameClock.total_minutes  # Bug 9: Track arrival for minimum stay
 	_claim_work_object()
 	_update_activity()
 	_on_arrive_at_building()
@@ -285,13 +298,15 @@ func _update_activity() -> void:
 		return
 
 	# Check if current destination is from a plan
+	# Bug 5: Only show plan text if actually at the plan destination
 	var active_plan: Dictionary = _get_current_plan()
 	if not active_plan.is_empty():
-		current_activity = active_plan.get("reason", "visiting")
-		_activity_emoji = "!"
-		_update_activity_label()
-		_update_visual_state()
-		return
+		if _current_destination == active_plan.get("destination", ""):
+			current_activity = active_plan.get("reason", "visiting")
+			_activity_emoji = "!"
+			_update_activity_label()
+			_update_visual_state()
+			return
 
 	var hour: int = GameClock.hour
 
@@ -588,6 +603,15 @@ func _parse_reflections(text: String) -> Array[String]:
 
 # --- Daily Planning ---
 
+func _check_planning_on_load() -> void:
+	## Bug 8: Generate plans if game loaded after the normal dawn trigger.
+	await get_tree().process_frame
+	if GameClock.hour >= 5 and _last_plan_day != _get_current_day():
+		if OS.is_debug_build():
+			print("[Planning] Late trigger for %s (loaded at hour %d)" % [npc_name, GameClock.hour])
+		_generate_daily_plan()
+
+
 func _generate_daily_plan() -> void:
 	## Ask Gemini for today's plan: 2-4 specific goals with times and locations.
 	if _planning_in_progress:
@@ -667,9 +691,36 @@ func _get_npc_workplace(target_name: String) -> String:
 
 
 func _build_planning_system_prompt() -> String:
-	return "You are %s, a %d-year-old %s in DeepTown. %s\n\nYou are planning your day. Generate 2-4 specific plans beyond your normal routine. Each plan should have a TIME (hour 6-22), a DESTINATION (must be one of the buildings listed below), and a short REASON.\n\nAvailable buildings: Bakery, General Store, Tavern, Church, Sheriff Office, Courthouse, Blacksmith\n\nRules:\n- You work at the %s from roughly 6-15\n- Plans should be for BREAKS or AFTER WORK (during work hours, plan short 1-2 hour visits only)\n- Plans should involve visiting other NPCs, checking on things, or personal goals\n- Be specific about WHO you want to see and WHY\n- Format each plan as: HOUR|DESTINATION|REASON (one per line)\n- Example: 11|Church|Visit Father Aldric to ask about the Sunday service\n- Example: 16|Tavern|Have a drink with Rose and catch up on news\n- Do NOT plan for hours 23-5 (sleep time)\n- Do NOT plan to visit your own workplace during core work hours (you're already there)" % [
-		npc_name, age, job, personality, workplace_building
-	]
+	var prompt: String = "You are %s, a %d-year-old %s in DeepTown. %s\n\n" % [npc_name, age, job, personality]
+	prompt += "You are planning your day. Generate 2-4 specific plans beyond your normal routine. Each plan should have a TIME (hour 6-22), a DESTINATION (must be one of the buildings listed below), and a short REASON.\n\n"
+	prompt += "Available buildings: Bakery, General Store, Tavern, Church, Sheriff Office, Courthouse, Blacksmith\n\n"
+
+	# Bug 4: NPC roster to prevent hallucinated names
+	prompt += "People who live and work in this town:\n"
+	prompt += "- Maria: Baker, works at Bakery, lives at House 1\n"
+	prompt += "- Thomas: Shopkeeper, works at General Store, lives at House 2\n"
+	prompt += "- Elena: Sheriff, works at Sheriff Office, lives at House 3\n"
+	prompt += "- Gideon: Blacksmith, works at Blacksmith, lives at House 4\n"
+	prompt += "- Rose: Barmaid, works at Tavern, lives at House 5\n"
+	prompt += "- Lyra: Clerk, works at Courthouse, lives at House 6\n"
+	prompt += "- Finn: Farmer/laborer, delivers to General Store, lives at House 7 (married to Clara)\n"
+	prompt += "- Clara: Devout churchgoer, helps at Church, lives at House 7 (married to Finn)\n"
+	prompt += "- Bram: Apprentice blacksmith, works at Blacksmith with Gideon, lives at House 8\n"
+	prompt += "- Old Silas: Retired storyteller, spends time at Tavern, lives at House 9\n"
+	prompt += "- Father Aldric: Priest, works at Church, lives at House 10\n"
+	prompt += "\nIMPORTANT: Only reference people from this list. Do NOT invent names.\n\n"
+
+	prompt += "Rules:\n"
+	prompt += "- You work at the %s from roughly 6-15\n" % workplace_building
+	prompt += "- Plans should be for BREAKS or AFTER WORK (during work hours, plan short 1-2 hour visits only)\n"
+	prompt += "- Plans should involve visiting other NPCs, checking on things, or personal goals\n"
+	prompt += "- Be specific about WHO you want to see and WHY\n"
+	prompt += "- Format each plan as: HOUR|DESTINATION|REASON (one per line)\n"
+	prompt += "- Example: 11|Church|Visit Father Aldric to ask about the Sunday service\n"
+	prompt += "- Example: 16|Tavern|Have a drink with Rose and catch up on news\n"
+	prompt += "- Do NOT plan for hours 23-5 (sleep time)\n"
+	prompt += "- Do NOT plan to visit your own workplace during core work hours (you're already there)"
+	return prompt
 
 
 func _build_planning_context() -> String:
@@ -818,6 +869,13 @@ func _get_current_plan() -> Dictionary:
 	return {}
 
 
+func _pair_key(a: String, b: String) -> String:
+	## Canonical key for a pair of NPC names (alphabetical order).
+	if a < b:
+		return a + ":" + b
+	return b + ":" + a
+
+
 func _face_toward(target_pos: Vector2) -> void:
 	## Flip sprite to face toward the target position.
 	if target_pos.x < global_position.x:
@@ -827,6 +885,10 @@ func _face_toward(target_pos: Vector2) -> void:
 
 
 func _on_hour_changed(hour: int) -> void:
+	# Bug 7: Reset daily conversation counts at midnight
+	if hour == 0:
+		_conv_counts_today.clear()
+
 	# Instant hunger restoration at meal times if at home
 	if _current_destination == home_building and hour in [7, 12, 19]:
 		hunger = minf(hunger + 30.0, 100.0)
@@ -868,7 +930,11 @@ func _on_time_tick(_game_minute: int) -> void:
 	if GameClock.total_minutes % 5 == 0:
 		var new_dest: String = _get_schedule_destination(GameClock.hour)
 		if new_dest != _current_destination:
-			_update_destination(GameClock.hour)
+			# Bug 9: Enforce minimum stay (except emergencies and sleep)
+			var is_emergency: bool = hunger < 20.0 or energy < 20.0 or GameClock.hour >= 23 or GameClock.hour < 5
+			var can_leave: bool = is_emergency or _dest_arrival_time <= 0 or (GameClock.total_minutes - _dest_arrival_time) >= MIN_STAY_MINUTES
+			if can_leave:
+				_update_destination(GameClock.hour)
 
 	# Try NPC-to-NPC conversation every 15 game minutes when not moving
 	if GameClock.total_minutes % 15 == 0 and not _is_moving:
@@ -1283,8 +1349,8 @@ func _get_schedule_destination(hour: int) -> String:
 		# Lunch break: go home to eat if hungry
 		if hour >= 11 and hour < 13 and hunger < 60.0:
 			return home_building
-		# Occasional Church visit
-		if _wants_to_visit("Church", hour):
+		# Bug 11: Only allow spontaneous Church visits after hour 8 (not during early work)
+		if hour >= 8 and _wants_to_visit("Church", hour):
 			return "Church"
 		return workplace_building
 
@@ -1298,7 +1364,8 @@ func _get_schedule_destination(hour: int) -> String:
 
 	# Evening (17-20) — social time
 	if hour >= 17 and hour < 20:
-		if social > 80.0 and energy < 40.0:
+		# Bug 9: Only leave Tavern if truly exhausted (was: social > 80 && energy < 40)
+		if energy < 20.0:
 			return home_building
 		return "Tavern"
 
@@ -1332,12 +1399,28 @@ func _wants_to_visit(building: String, _hour: int) -> bool:
 # --- NPC-to-NPC Conversations ---
 
 func _try_npc_conversation() -> void:
-	## If another NPC is within 2 tiles and we haven't talked recently, have a real conversation.
+	## If another NPC is within range and we haven't talked recently, have a real conversation.
+
+	# Bug 2: Don't chat while sleeping or during night hours
+	if current_activity.begins_with("sleeping"):
+		return
+	if GameClock.hour >= 22 or GameClock.hour < 5:
+		return
+
 	for other: Node in get_tree().get_nodes_in_group("npcs"):
 		if other == self:
 			continue
 		var other_npc: CharacterBody2D = other as CharacterBody2D
-		if other_npc.global_position.distance_to(global_position) > 64.0:
+
+		# Bug 2: Other NPC must also be awake
+		if other_npc.current_activity.begins_with("sleeping"):
+			continue
+
+		# Bug 6: Building-aware conversation distance
+		var dist: float = other_npc.global_position.distance_to(global_position)
+		var same_building: bool = _current_destination != "" and _current_destination == other_npc._current_destination
+		var max_dist: float = 192.0 if same_building else 64.0
+		if dist > max_dist:
 			continue
 		if other_npc._is_moving:
 			continue
@@ -1349,9 +1432,22 @@ func _try_npc_conversation() -> void:
 			if GameClock.total_minutes - _last_conversation_time[other_name] < CONVERSATION_COOLDOWN:
 				continue
 
+		# Bug 7: Daily cap per pair
+		var pair: String = _pair_key(npc_name, other_name)
+		if _conv_counts_today.get(pair, 0) >= MAX_CONV_PER_PAIR_PER_DAY:
+			continue
+
+		# Bug 7: Extended cooldown for cohabitants (same building)
+		if _current_destination != "" and _current_destination == other_npc._current_destination:
+			if _last_conversation_time.has(other_name):
+				var mins_since: int = GameClock.total_minutes - _last_conversation_time[other_name]
+				if mins_since < COOLDOWN_COHABIT_MINUTES:
+					continue
+
 		# Set cooldown for both
 		_last_conversation_time[other_name] = GameClock.total_minutes
 		other_npc._last_conversation_time[npc_name] = GameClock.total_minutes
+		_conv_counts_today[pair] = _conv_counts_today.get(pair, 0) + 1
 
 		# Face each other
 		_face_toward(other_npc.global_position)
@@ -1762,6 +1858,11 @@ func _scan_perception_area() -> void:
 func _scan_environment() -> void:
 	## Perceive object states in the current building.
 	## Creates memories about notable states: active objects, empty workstations, etc.
+
+	# Bug 1: Don't scan while sleeping
+	if current_activity.begins_with("sleeping"):
+		return
+
 	if GameClock.total_minutes - _last_environment_scan < ENVIRONMENT_SCAN_INTERVAL:
 		return
 	_last_environment_scan = GameClock.total_minutes
@@ -1923,6 +2024,11 @@ func _pick_gossip_for(other_npc: CharacterBody2D) -> Dictionary:
 		if other_npc.npc_name in participants:
 			continue
 
+		# Bug 3: Skip if already told this person
+		var shared_with: Array = mem.get("shared_with", [])
+		if other_npc.npc_name in shared_with:
+			continue
+
 		# Prefer certain types
 		var type: String = mem.get("type", "")
 		if type in ["observation", "dialogue", "environment", "reflection", "gossip"]:
@@ -1995,6 +2101,12 @@ func _share_gossip_with(receiver_npc: CharacterBody2D, original_memory: Dictiona
 		_current_destination, _current_destination,
 		2.0, 0.0
 	)
+
+	# Bug 3: Track that we told this person (prevents repeat gossip)
+	if not original_memory.has("shared_with"):
+		original_memory["shared_with"] = []
+	if receiver_npc.npc_name not in original_memory["shared_with"]:
+		original_memory["shared_with"].append(receiver_npc.npc_name)
 
 	# Sharing gossip builds trust slightly (intimacy of shared secrets)
 	Relationships.modify_mutual(npc_name, receiver_npc.npc_name, 1, 0, 0)
