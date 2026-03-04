@@ -24,10 +24,16 @@ var hunger: float = 100.0
 var energy: float = 100.0
 var social: float = 100.0
 
-# Memory Stream (replaces old observations array)
-var memory: MemoryStream = MemoryStream.new()
+# Three-tier memory system (replaces old flat MemoryStream)
+var memory: MemorySystem = MemorySystem.new()
 var _observation_cooldowns: Dictionary = {}  # {actor_name: last_observed_game_minute}
 const OBSERVATION_COOLDOWN_MINUTES: int = 60
+
+# Embedding queue — batch-processes pending embeddings every 5 real seconds
+var _embedding_queue: Array[Dictionary] = []
+var _embedding_timer: float = 0.0
+const EMBEDDING_BATCH_INTERVAL: float = 5.0
+const EMBEDDING_BATCH_SIZE: int = 10
 
 # NPC-to-NPC conversation tracking
 var _last_conversation_time: Dictionary = {}  # {npc_name: game_time}
@@ -108,6 +114,9 @@ func initialize(data: Dictionary, building_positions: Dictionary, building_inter
 	sprite_path = data.get("sprite", "")
 	_building_positions = building_positions
 	_building_interiors = building_interiors
+
+	# Initialize three-tier memory system
+	memory.initialize(npc_name, personality, PlayerProfile.player_name)
 
 
 func _ready() -> void:
@@ -191,6 +200,15 @@ func _physics_process(delta: float) -> void:
 		sprite.flip_h = true
 	elif dir_x > 1.0:
 		sprite.flip_h = false
+
+
+func _process(delta: float) -> void:
+	# Batch-process pending embeddings every EMBEDDING_BATCH_INTERVAL real seconds
+	if _embedding_queue.size() > 0:
+		_embedding_timer += delta
+		if _embedding_timer >= EMBEDDING_BATCH_INTERVAL:
+			_embedding_timer = 0.0
+			_process_embedding_queue()
 
 
 func _arrive() -> void:
@@ -470,6 +488,11 @@ func _try_reflect() -> void:
 				0.0
 			)
 
+		# Update core memory emotional state from the last insight
+		if not insights.is_empty():
+			var mood_hint: String = insights[-1].left(150)
+			memory.update_emotional_state(mood_hint)
+
 		print("[Reflection] %s generated %d insights" % [npc_name, insights.size()])
 		if OS.is_debug_build():
 			for ins: String in insights:
@@ -481,6 +504,14 @@ func _build_reflection_system_prompt() -> String:
 	var prompt: String = "You are %s, a %d-year-old %s in DeepTown. %s\n\n" % [
 		npc_name, age, job, personality
 	]
+
+	# Core memory: emotional state and key facts
+	var emotional_state: String = memory.core_memory.get("emotional_state", "")
+	if emotional_state != "":
+		prompt += "Current mood: %s\n" % emotional_state
+	var key_facts: Array = memory.core_memory.get("key_facts", [])
+	if not key_facts.is_empty():
+		prompt += "Things you know: %s\n\n" % ", ".join(key_facts)
 
 	# Add relationship awareness to reflections
 	var all_rels: Dictionary = Relationships.get_all_for(npc_name)
@@ -581,7 +612,7 @@ func _generate_daily_plan() -> void:
 
 		_daily_plan = _parse_plan(text)
 
-		# Store plan as a memory
+		# Store plan as a memory + update core memory active goals
 		if not _daily_plan.is_empty():
 			var plan_summary: Array[String] = []
 			for p: Dictionary in _daily_plan:
@@ -591,6 +622,7 @@ func _generate_daily_plan() -> void:
 				plan_desc, "plan", npc_name, [npc_name] as Array[String],
 				home_building, home_building, 3.0, 0.1
 			)
+			memory.set_active_goals(plan_summary)
 
 		if OS.is_debug_build():
 			print("[Planning] %s's plan for today:" % npc_name)
@@ -922,8 +954,9 @@ func get_conversation_reply_async(player_message: String, history: Array[Diction
 				[npc_name, PlayerProfile.player_name] as Array[String],
 				_current_destination, _current_destination, 5.0, 0.3
 			)
-			# Continued conversation builds relationship
 			Relationships.modify(npc_name, PlayerProfile.player_name, 1, 1, 0)
+			# Update core memory: player summary after conversation
+			_update_player_summary_async(player_message, text)
 			callback.call(text)
 		else:
 			callback.call(_get_template_response())
@@ -934,6 +967,28 @@ func _build_system_prompt() -> String:
 	var prompt: String = "You are %s, a %d-year-old %s in the town of DeepTown. %s\n\nYour speech style: %s\n\n" % [
 		npc_name, age, job, personality, speech_style
 	]
+
+	# Core memory: emotional state
+	var emotional_state: String = memory.core_memory.get("emotional_state", "")
+	if emotional_state != "":
+		prompt += "Current mood: %s\n" % emotional_state
+
+	# Core memory: what I know about the player
+	var player_summary: String = memory.core_memory.get("player_summary", "")
+	if player_summary != "" and not player_summary.begins_with("I haven't met"):
+		prompt += "What you know about %s: %s\n" % [PlayerProfile.player_name, player_summary]
+
+	# Core memory: NPC relationship summaries
+	var npc_summaries: Dictionary = memory.core_memory.get("npc_summaries", {})
+	for npc_n: String in npc_summaries:
+		prompt += "About %s: %s\n" % [npc_n, npc_summaries[npc_n]]
+
+	# Core memory: key facts
+	var key_facts: Array = memory.core_memory.get("key_facts", [])
+	if not key_facts.is_empty():
+		prompt += "Important things you know: %s\n" % ", ".join(key_facts)
+
+	prompt += "\n"
 
 	# Add top relationships to identity
 	var friends: Array[String] = Relationships.get_closest_friends(npc_name, 3)
@@ -1065,6 +1120,25 @@ func _build_dialogue_context() -> String:
 
 	context += "%s is standing in front of you and wants to talk. They recently moved to DeepTown and live in House 11. Respond naturally." % PlayerProfile.player_name
 	return context
+
+
+func _update_player_summary_async(player_said: String, npc_replied: String) -> void:
+	## Ask Gemini to update core memory's player_summary after a conversation.
+	if not GeminiClient.has_api_key():
+		return
+	var old_summary: String = memory.core_memory.get("player_summary", "")
+	var prompt: String = "Based on this conversation with %s, update your understanding of them in 1-2 sentences.\nCurrent understanding: %s\nThey said: \"%s\"\nYou replied: \"%s\"\nNew understanding:" % [
+		PlayerProfile.player_name, old_summary, player_said.left(100), npc_replied.left(100)
+	]
+	GeminiClient.generate(
+		"You are %s. Write a brief 1-2 sentence summary of what you now think about %s." % [npc_name, PlayerProfile.player_name],
+		prompt,
+		func(text: String, success: bool) -> void:
+			if success and text != "":
+				memory.update_player_summary(text.strip_edges().left(200))
+				if OS.is_debug_build():
+					print("[Memory] %s updated player summary: %s" % [npc_name, text.strip_edges().left(80)])
+	)
 
 
 func _get_template_response() -> String:
@@ -1642,14 +1716,39 @@ func _estimate_location(pos: Vector2) -> String:
 func _add_memory_with_embedding(description: String, type: String, actor: String,
 		participants: Array[String], observer_loc: String, observed_loc: String,
 		importance: float, valence: float) -> void:
-	## Creates the memory record immediately (with empty embedding),
-	## then fires off an async embedding request that updates in-place.
+	## Creates the memory record via MemorySystem (with deduplication),
+	## then queues an async batch embedding request.
 	var mem: Dictionary = memory.add_memory(description, type, actor, participants,
 		observer_loc, observed_loc, importance, valence)
 
-	# Fire async embedding request
-	EmbeddingClient.embed_text(description, func(embedding: PackedFloat32Array) -> void:
-		mem["embedding"] = embedding
+	# Queue embedding (processed in batches every 5 seconds)
+	if mem.get("embedding", PackedFloat32Array()).is_empty():
+		_embedding_queue.append(mem)
+
+
+func _process_embedding_queue() -> void:
+	## Process pending embeddings in batches using the batch API.
+	if _embedding_queue.is_empty():
+		return
+	var batch: Array[Dictionary] = []
+	var batch_count: int = mini(EMBEDDING_BATCH_SIZE, _embedding_queue.size())
+	for i: int in range(batch_count):
+		batch.append(_embedding_queue[i])
+	_embedding_queue = _embedding_queue.slice(batch_count)
+
+	var texts: Array[String] = []
+	for mem: Dictionary in batch:
+		texts.append(mem.get("text", mem.get("description", "")))
+
+	if not EmbeddingClient.has_api_key():
+		return
+
+	EmbeddingClient.embed_batch(texts, func(embeddings: Array[PackedFloat32Array]) -> void:
+		for i: int in range(mini(batch.size(), embeddings.size())):
+			batch[i]["embedding"] = embeddings[i]
+		if OS.is_debug_build():
+			print("[Memory] %s: batch embedded %d memories (%d still queued)" % [
+				npc_name, batch.size(), _embedding_queue.size()])
 	)
 
 

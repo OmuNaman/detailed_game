@@ -6,247 +6,249 @@ A top-down 2D pixel-art town simulation (GBA Pokemon aesthetic) with Dwarf Fortr
 ## Tech Stack
 - **Engine:** Godot 4.x (GDScript only, no C#)
 - **Art Style:** 16x16 or 32x32 pixel tiles, top-down GBA Pokemon style
-- **LLM Integration:** Gemini API for NPC dialogue and dynamic decision-making
+- **LLM Integration:** Gemini API (Flash for dialogue, Flash Lite for analysis/compression)
+- **Embeddings:** Gemini `text-embedding-004` (768-dim) for memory retrieval
 - **Target:** Desktop (Windows/Linux/Mac)
 
 ## Architecture Principles
 - **Data-driven:** NPCs, items, buildings, laws, jobs defined in JSON/Resource files — NOT hardcoded
 - **ECS-inspired:** Use Godot nodes as components. NPCs are scenes composed of: `AIBrain`, `Memory`, `Relationships`, `Needs`, `Schedule`, `Inventory`, `Reputation`
 - **Simulation-first:** The world ticks forward even offscreen. NPCs act whether the player sees them or not
-- **Memory is sacred:** Every NPC remembers every interaction, witnessed event, and rumor. Memory fades over time but never fully disappears. Use weighted memory with recency bias
+- **Memory is sacred:** Three-tier memory architecture (Core → Episodic → Archival). Memories never truly disappear — they compress into summaries. Important memories are protected forever
+- **Stanford Generative Agents:** Architecture inspired by Park et al. 2023, extended with MemGPT-style Core Memory, explicit relationship tracking, and hierarchical plan decomposition
 
 ## Project Structure
 ```
 deeptown/
-├── CLAUDE.md
+├── CLAUDE.md                    # This file
 ├── project.godot
 ├── assets/
-│   ├── sprites/          # Character spritesheets, tilesets
-│   ├── audio/            # SFX, ambient
-│   └── fonts/            # Pixel fonts
+│   ├── sprites/                 # Character spritesheets, tilesets
+│   ├── audio/                   # SFX, ambient
+│   └── fonts/                   # Pixel fonts
 ├── scenes/
-│   ├── world/            # Town map, buildings, interiors
-│   ├── npcs/             # NPC base scene + variants
-│   ├── ui/               # HUD, dialogue, court UI, reputation screen
-│   └── systems/          # Autoloads and system scenes
+│   ├── world/                   # Town map, buildings, interiors
+│   ├── npcs/                    # NPC base scene + variants
+│   ├── ui/                      # HUD, dialogue, court UI, debug overlay
+│   └── systems/                 # Autoloads and system scenes
 ├── scripts/
-│   ├── core/             # GameClock, EventBus, SaveManager
-│   ├── npc/              # AIBrain, Memory, Relationships, Schedule, Needs
-│   ├── systems/          # CrimeSystem, CourtSystem, EconomySystem, ReputationSystem
-│   ├── world/            # BuildingManager, WeatherSystem, TileInteraction
-│   ├── player/           # PlayerController, PlayerInventory, PlayerActions
-│   └── llm/              # GeminiClient, PromptBuilder, ResponseParser
+│   ├── core/                    # GameClock, EventBus, SaveManager, WorldObjects, Relationships, PlayerProfile
+│   ├── npc/                     # npc_controller.gd, memory_stream.gd (being replaced by three-tier)
+│   ├── systems/                 # CrimeSystem, CourtSystem, EconomySystem, ReputationSystem
+│   ├── world/                   # BuildingManager, WeatherSystem, TileInteraction
+│   ├── player/                  # PlayerController, PlayerInventory, PlayerActions
+│   └── llm/                     # gemini_client.gd (generate, embedding endpoints)
 ├── data/
-│   ├── npcs.json         # NPC definitions (name, job, personality, relationships)
-│   ├── buildings.json    # Building types, interiors, functions
-│   ├── items.json        # All items in the game
-│   ├── laws.json         # Town laws and penalties
-│   ├── jobs.json         # Job definitions, schedules, pay
-│   └── dialogue/         # Dialogue templates and prompt contexts
+│   ├── npcs/                    # Per-NPC save folders (memories, conversations, gossip, core_memory.json)
+│   └── ...                      # npcs.json, buildings.json, items.json, laws.json, jobs.json
 └── docs/
-    ├── DESIGN.md          # Full game design document
-    ├── SYSTEMS.md         # Deep dive into each simulation system
-    └── ROADMAP.md         # Development phases and milestones
+    └── devlog_*.md              # Devlogs 001-028+
 ```
 
-## Core Systems (Priority Order)
+---
 
-### 1. Game Clock & Time
-- 1 real second = ~1 game minute (configurable)
-- Day/night cycle affects NPC behavior, shop hours, crime rates
-- Seasons affect mood, events, economy
-- Time drives EVERYTHING — schedules, needs decay, memory fade, crop growth
+## Current State — What's Implemented
 
-### 2. NPC System (The Heart of the Game)
+### Foundation (Pre-Prompt Systems)
+- **Pathfinding:** AStarGrid2D (replaced broken NavigationServer2D). Waypoint following via `_path: PackedVector2Array`
+- **Game Clock:** `GameClock` autoload. `hour`, `minute`, `total_minutes`, `time_scale` (F6 cycles 1x-60x). Signals: `time_tick(game_minute)`, `time_hour_changed(hour)`
+- **Event Bus:** `EventBus` autoload for decoupled signal routing
+- **Player:** Top-down 4-directional movement. E key to interact. In group `"player"`
+- **NPCs:** 11 NPCs in group `"npcs"`. Each has: `npc_name`, `age`, `job`, `personality`, `home_building`, `workplace_building`
+- **Gemini Client:** `GeminiClient` autoload with `generate()` for dialogue and `get_embedding()` / `get_embeddings_batch()` for vectors
+- **Perception:** Area2D with CircleShape2D radius 160px, collision_mask = 6 (player layer 2 + NPC layer 4)
+- **Tile Reservation:** Anti-stacking system prevents NPCs from occupying the same tile
+- **Per-NPC Save Folders:** Each NPC saves memories, conversations, gossip to `data/npcs/{name}/`
+- **Debug Overlay:** F3 shows needs bars, observation count, memory stats
 
-#### Inspired by: Stanford "Generative Agents" Paper (Park et al., 2023)
-The NPCs use an architecture based on the Stanford Generative Agents research, where 25 AI agents in a 2D pixel world autonomously formed relationships, threw parties, and coordinated complex social behavior — all emergently from memory, reflection, and planning loops. Our system adapts this for a game context.
+### Prompt A — Stateful Furniture (✅ Implemented)
+`WorldObjects` autoload tracks every interactable object in every building. Objects have state (idle/baking/forging/serving), current user, and transitions. NPCs claim objects on arrival, release on departure.
 
-Each NPC has:
-- **Identity:** Name, age, gender, job, personality traits (brave, greedy, kind, lazy, etc.), a 2-3 sentence core description ("Maria is the town baker. She is warm but gossips too much. She secretly resents the mayor for raising her rent.")
-- **Needs:** Hunger, energy, social, happiness, safety — decay over time, drive behavior
-- **Mood:** Computed from needs + recent memories + relationships + personality
+### Prompt B — NPC Activity System (✅ Implemented)
+Visible activity descriptions derived from location + object + needs + time. Emojis above heads. Observers see activities: "Saw Maria kneading dough near the Bakery."
 
-#### NPC Cognitive Architecture (3 pillars):
+### Prompt C — Working Doors & Sprite States (✅ Implemented)
+Doors open/close on NPC entry/exit. Visual occupancy indicators (lit windows, chimney smoke). Direction-aware sprites.
 
-**PILLAR 1 — Memory Stream (Observe → Store → Retrieve)**
-The memory stream is the NPC's full record of experience. NOT a simple array — it's a scored retrieval system.
+### Prompt D — Reflection System (✅ Implemented, will be REPLACED by Prompt L)
+Nightly reflections at hour 22 via Gemini. 1-3 insights stored as type="reflection" with importance 7.0. Basic system — Prompt L upgrades to full Stanford two-step with 5 questions × 5 insights.
 
-Each memory is a `MemoryRecord`:
-```
-{
-  description: String,       # "Saw player steal bread from the bakery"
-  type: "observation" | "reflection" | "plan" | "dialogue" | "rumor",
-  participants: [npc_ids],
-  location: String,
-  game_time: int,            # When it happened
-  importance: float,         # 1-10. Mundane=1, witnessed murder=10
-  last_accessed: int,        # Last time this memory was retrieved
-  emotional_valence: float,  # -1.0 (terrible) to +1.0 (wonderful)
-  embedding_key: String      # For semantic search if using vector DB later
-}
-```
+### Prompt E — Environment Perception (✅ Implemented)
+Every 30 game-minutes, NPCs scan building objects for notable states. Absence awareness (empty workplace). Rich observations: "Saw Gideon hammering metal at the anvil (the anvil was forging)."
 
-**Memory retrieval** uses three scores combined:
-- **Recency:** More recent memories score higher. Exponential decay: `score = 0.99 ^ (hours_since_event)`
-- **Importance:** How significant was the event? Eating breakfast = 1, witnessing a crime = 9, getting married = 10
-- **Relevance:** How related is this memory to the current situation? Use keyword matching for v1, semantic similarity (via Gemini embeddings) for v2
+### Prompt F — Relationships (✅ Implemented)
+`Relationships` autoload: Trust/Affection/Respect per NPC pair (-100 to 100). Seeded from lore. Daily decay. Currently flat +1/+1 per conversation — Prompt J upgrades to content-aware.
 
-Final retrieval score = `recency * w1 + importance * w2 + relevance * w3` (weights tunable, start with equal)
+### Prompt G — Gossip System (✅ Implemented)
+40% gossip chance during NPC-to-NPC conversations. Trust ≥ 15 gate. Hop tracking (max 3), importance decay per hop. Type="gossip" memories. Prompt N reduces to 20% and adds natural diffusion.
 
-When an NPC needs to act or respond, retrieve top 5-10 memories by this score and feed them as context.
+### Prompt H — Daily Planning (✅ Implemented)
+At hour 5, each NPC generates 2-4 plans via Gemini with hour/destination/reason. Plans override default schedule. Emergency overrides (hunger/energy < 20) and sleep (23-5) always win. Prompt N extends to 3-level recursive decomposition.
 
-**PILLAR 2 — Reflection (Synthesize → Insight → Beliefs)**
-Periodically (every ~50 observations, or when importance accumulates past a threshold), NPCs reflect on recent memories and generate higher-level insights:
+---
 
-- Raw memories: "John yelled at me Tuesday", "John ignored me at the tavern", "John spread a rumor about me"
-- **Reflection output:** "I believe John dislikes me and is trying to damage my reputation" (importance: 8)
-- Reflections are stored BACK into the memory stream as type "reflection" with high importance
-- Reflections shape future behavior: an NPC who reflects "the sheriff is corrupt" may stop reporting crimes
-- Use Gemini API to generate reflections. Prompt: "Given these recent memories, what 1-3 high-level insights would {NPC_name} draw? Consider their personality: {traits}"
-- **Fallback without LLM:** Rule-based reflection — if 3+ negative memories about same person in 48h → generate "I don't trust {person}" reflection
+## Pending Implementation (Prompts I–N)
 
-**PILLAR 3 — Planning (Daily Plans → Hourly Actions → Reactive Replanning)**
-Each morning (6 AM game time), NPCs generate a daily plan:
+These prompt documents are written and ready to feed to Claude Code **in this exact order:**
 
-- **Input:** NPC identity + recent reflections + current needs + current relationships + yesterday's events
-- **Output:** Ordered list of intended actions with times: "7am: eat breakfast, 8am: open bakery, 12pm: lunch break — visit Maria, 5pm: close shop, 6pm: go to tavern, 9pm: go home, 10pm: sleep"
-- Plans are stored in memory stream as type "plan"
-- **Reactive replanning:** When something unexpected happens (witness a crime, get into argument, player interaction), NPC can revise remaining plan
-- Use Gemini API for rich planning. Fallback: template schedules per job type with personality-based variation
+### Step 1: Prompt I — Three-Tier Memory Architecture
+**REPLACES** the flat `memory_stream[200]` with FIFO eviction.
+- Tier 0 (Core Memory): ~800 tokens always in every prompt. Identity, emotional_state, player_summary, npc_summaries, key_facts.
+- Tier 1 (Episodic Memory): Unlimited vector-searchable archive. 768-dim embeddings. 20+ fields per memory.
+- Tier 2 (Archival Summaries): Compressed summaries with embeddings.
+- Retrieval: `score = 0.5×relevance + 0.3×recency + 0.2×importance`. Top 8 returned.
+- Two-phase deduplication: hash-based exact match + Jaccard state-change detection.
+- Migration: old memory_stream auto-converts to new format.
 
-#### Observation System
-NPCs don't know everything — they only know what they **perceive**:
-- NPCs have a **perception radius** (~5 tiles). They observe events within this radius
-- Observations become memories automatically: "Saw {actor} {action} at {location} at {time}"
-- NPCs in buildings only observe events inside that building
-- NPCs can overhear conversations if within 3 tiles
-- What NPCs observe drives their gossip, opinions, crime reports, and relationship changes
-- IMPORTANT: If no NPC observes an event, it effectively didn't happen socially. A crime with no witnesses = no investigation
+### Step 2: Prompt K — Bug Fix Mega-Patch (11 fixes)
+EnvScan sleep guard, conversation sleep guard, gossip `shared_with` tracking, NPC-workplace mapping in plans, plan-location activity check, large building conversation distance (192px), Finn-Clara 3/day cap, Day 1 planning trigger, Tavern minimum 1-hour stay, player name consistency, Thomas routing fix.
 
-#### Emergent Behavior (This is the magic)
-With these 3 pillars, NPCs should EMERGENTLY:
-- Organize social events (NPC reflects "I haven't socialized enough" → plans a gathering → invites friends)
-- Form opinions about the player based on observed actions, not scripted triggers
-- Spread information through gossip chains (NPC A tells NPC B what they saw → B forms opinion → B tells C)
-- Change career paths (NPC reflects "I hate my job and my boss is mean" → plans to look for new work)
-- Fall in love, get jealous, hold grudges, forgive — all from accumulated memories and reflections
-- Coordinate complex behavior without explicit scripting
+### Step 3: Prompt J — Conversation Impact
+**REPLACES** flat +1/+1 with content-aware analysis via Flash Lite.
+- Player conversations: trust/affection/respect changes (-5 to +5) based on content.
+- Core Memory updates: emotional_state, player_summary, key_facts evolve per conversation.
+- NPC-to-NPC: bidirectional analysis (-3 to +3), npc_summaries updates.
+- Gossip impact: listener's Trust toward subject shifts based on valence.
+- Relationship-aware dialogue: Trust/Affection/Respect descriptions in all prompts.
 
-#### Relationships
-- **Dictionary per NPC:** `npc_id -> {trust: float, affection: float, respect: float, history: []}`
-- Updated by interactions and observations, NOT by script
-- Gossip propagation: When NPC A gossips to NPC B about NPC C, B stores it as a "rumor" type memory with lower importance than firsthand observation
-- Romantic relationships: crush → dating → engaged → married → (possibly divorced) — driven by affection scores and reflection insights
-- Family ties: parents, children, siblings — affect loyalty, trust baseline, and behavior
+### Step 4: Prompt L — Compression + Enhanced Reflections
+**REPLACES** Prompt D reflection system.
+- Episode summaries (Level 1): oldest 30 raw memories → 3-5 sentence summary.
+- Period summaries (Level 2): oldest 7 episodes → 2-3 sentence summary.
+- Forgetting curves: stability decay (×0.7 observations, ×0.85 others). Protected memories immune.
+- Enhanced reflections: 100 recent memories → 5 questions → 5 insights per question with citations.
+- Midnight routine: decay → reflect → forget → compress → save.
 
-### 3. Gossip & Information Propagation
-Information in DeepTown is NOT global. It spreads like a real town:
-- **Firsthand:** NPC saw it happen → stored as observation (high reliability)
-- **Secondhand:** NPC was told by witness → stored as rumor (medium reliability)
-- **Thirdhand+:** Telephone game — details may distort. Rumor reliability degrades each hop
-- **Gossip triggers:** NPCs with high social need gossip more. NPCs gossip about high-importance memories
-- **Gossip targets:** NPCs prefer gossiping to friends (high trust). They AVOID telling secrets to NPCs they distrust
-- **Information decay:** After 3+ hops, rumors may become inaccurate ("player stole bread" → "player robbed the bakery" → "player is a dangerous criminal")
-- **Social network mapping:** Track who told whom. This creates emergent factions and information bubbles
-- This system means: commit a crime in front of one NPC, and within 2-3 game days the whole town may know — or may not, if the witness has no friends
+### Step 5: Prompt M — Memory-Aware Dialogue Integration
+**REWIRES** all Gemini dialogue calls to use retrieval.
+- Player dialogue: player text → retrieval query → top 8 memories + Core Memory + relationship in prompt.
+- Working memory: last 6 turns for multi-turn conversations.
+- Conversation summary: on end, summarize to single protected memory.
+- Emotional state persistence: mood carries between interactions, decays to neutral after 3+ quiet hours.
+- Past event recall: "Remember when we first met?" → retrieval surfaces actual first conversation.
 
-### 4. Crime & Law System
-- **Crimes:** Theft, assault, trespassing, vandalism, murder, fraud, public disturbance
-- **Detection:** Crimes need witnesses or evidence. No omniscient police
-- **Investigation:** Sheriff interviews witnesses, searches for evidence, can get it wrong
-- **Arrest:** Sheriff confronts suspect. Suspect can comply, flee, or resist
-- **Trial:** Town court with judge NPC. Witnesses testify. Verdict based on evidence quality, judge personality, town opinion. Wrongful convictions possible
-- **Punishment:** Fine, jail time, community service, exile. Severity based on crime + criminal history
-- **Player crimes:** Player is subject to the SAME system. Get caught stealing? Face trial
-- NPCs can also be criminals. Thieves, con artists, even corrupt officials
+### Step 6: Prompt N — Stanford Complete Features
+**ADDS** four missing Stanford features:
+1. **Recursive Plan Decomposition:** 3-level (day→hour→5min). Lazy evaluation — decompose just-in-time.
+2. **Real-time Plan Re-evaluation:** On significant observations, evaluate CONTINUE or REACT. Replan from current moment.
+3. **Environment Tree Traversal:** Hierarchical world tree (Building→Area→Object). Per-NPC known_world subgraph.
+4. **Natural Information Diffusion:** Retrieval-driven third-party mentions in conversation. Reduces explicit gossip to 20%.
+5. **Turn-by-Turn Dialogue:** Each speaker retrieves memories before generating their line.
 
-### 5. Reputation System
-- Town-wide reputation score (hidden, but effects are visible)
-- Per-NPC opinion tracking (each NPC remembers YOUR actions independently)
-- Reputation spreads via gossip — not everyone knows everything instantly
-- Actions have reputation consequences: helping = +rep, stealing = -rep, but ONLY if witnessed/known
-- High reputation: discounts, trust, information, elected positions
-- Low reputation: price gouging, refused service, NPC hostility, arrest on suspicion
+---
 
-### 6. Economy
-- NPCs earn wages from jobs, spend on needs (food, rent, entertainment)
-- Shops have inventory that depletes and restocks
-- Supply and demand — prices shift based on scarcity
-- Player can trade, own a shop, hire NPCs, or steal
-- Money circulates: NPC buys from shop → shop pays supplier → supplier pays workers
+## NPC Roster (11 NPCs)
 
-### 7. LLM Integration (Gemini API)
-Gemini serves THREE distinct roles in the cognitive architecture:
+| Name | Job | Workplace | Home | Key Traits |
+|------|-----|-----------|------|------------|
+| Maria | Baker | Bakery | House 1 | Warm, gossips, resents mayor over rent |
+| Thomas | Shopkeeper | General Store | House 2 | Practical, fair, community-minded |
+| Elena | Sheriff | Sheriff Office | House 3 | Tough, principled, sense of justice |
+| Gideon | Blacksmith | Blacksmith | House 4 | Shy, skilled, secret crush on Maria |
+| Rose | Barmaid | Tavern | House 5 | Social, observant, hears everything |
+| Lyra | Clerk | Courthouse | House 6 | Meticulous, ambitious, quietly sharp |
+| Finn | Farmer/Laborer | General Store | House 7 | Hardworking, simple, married to Clara |
+| Clara | Churchgoer | Church | House 7 | Devout, kind, married to Finn |
+| Bram | Apprentice | Blacksmith | House 8 | Eager, young, looks up to Gideon |
+| Old Silas | Retired | Tavern | House 9 | Storyteller, suspicious, knows secrets |
+| Father Aldric | Priest | Church | House 10 | Wise, patient, crisis counselor |
 
-**Role 1 — Dialogue Generation (most frequent)**
-- When player talks to NPC: system prompt with NPC identity + top retrieved memories + current mood + relationship with player → generate natural response
-- NPCs should reference their memories naturally: "Didn't I see you near the bakery yesterday?" (if they have that observation)
-- Personality must shine through: a grumpy NPC and a cheerful NPC witnessing the same event respond differently
+### Key Relationships (Seeded)
+- Gideon → Maria: Affection 55 (secret crush)
+- Finn ↔ Clara: High trust/affection (married)
+- Bram → Gideon: High respect (mentor)
+- Old Silas: Low trust toward most (suspicious nature)
+- Elena ↔ Aldric: Mutual respect (community pillars)
 
-**Role 2 — Reflection Synthesis (periodic)**
-- Every ~50 observations or when importance threshold is hit
-- Prompt: "You are {name}, {description}. Based on these recent experiences: {memories}. What 1-3 high-level realizations or beliefs would you form?"
-- Output stored back as reflection memories with high importance
+---
 
-**Role 3 — Daily Planning (once per game day per NPC)**
-- Prompt: "You are {name}, {description}. Your recent reflections: {reflections}. Your needs: {needs}. Your relationships: {key_relationships}. What is your plan for today? List hour-by-hour."
-- Parse into actionable schedule the game engine can execute
+## Autoloads
 
-**Cost Management (CRITICAL with $200 budget):**
-- **Batch reflections:** Don't reflect every NPC every cycle. Rotate: 3-4 NPCs reflect per game day
-- **Cache dialogue:** If NPC mood/context hasn't changed much, reuse recent responses for similar prompts
-- **Template fallback:** ALWAYS have rule-based fallbacks. LLM enhances but is not required
-- **Tiered importance:** Only use LLM for player-facing dialogue + reflections. Use templates for NPC-to-NPC routine dialogue
-- **Track spend:** Log every API call cost. Add a debug overlay showing daily/total API spend
-- **Gemini Flash:** Use gemini-2.0-flash for routine dialogue (cheap), gemini-2.5-pro only for critical reflections and complex planning
-- **Estimated budget:** ~15-20 NPCs × 1 plan/day + ~5 reflections/day + player dialogues = manageable if using Flash model
+| Autoload | Purpose |
+|----------|---------|
+| `GameClock` | Time management. `hour`, `minute`, `total_minutes`, `time_scale` |
+| `EventBus` | Signal routing. `time_tick`, `time_hour_changed` |
+| `WorldObjects` | Tracks all furniture objects, states, users per building |
+| `Relationships` | Trust/Affection/Respect tracking for all NPC pairs |
+| `GeminiClient` | LLM API calls: `generate()`, `get_embedding()`, `get_embeddings_batch()` |
+| `PlayerProfile` | Player identity: `player_name` used everywhere |
+
+---
+
+## Key File Locations
+
+| File | Purpose |
+|------|---------|
+| `scripts/npc/npc_controller.gd` | Main NPC brain: movement, scheduling, planning, perception, conversations, activities |
+| `scripts/npc/memory_stream.gd` | Current memory system (200-cap FIFO — being replaced by Prompt I) |
+| `scripts/core/world_objects.gd` | Stateful furniture tracking |
+| `scripts/core/relationships.gd` | Relationship scores and modification |
+| `scripts/llm/gemini_client.gd` | Gemini API wrapper |
+| `data/npcs/{name}/` | Per-NPC save data (memories, conversations, gossip) |
+
+---
+
+## Memory Types in Current System
+
+| Type | Source | Typical Importance |
+|------|--------|--------------------|
+| `observation` | Seeing another NPC/Player | 2.0 (NPC), 5.0 (Player) |
+| `environment` | Object state scanning | 2.5 |
+| `dialogue` | NPC-to-NPC conversation | 3.0-5.0 |
+| `player_dialogue` | Player conversation | 6.0-8.0 |
+| `reflection` | Nightly reflection | 7.0 |
+| `plan` | Daily plan summary | 3.0-4.0 |
+| `gossip` | Heard from another NPC | 2.0-5.0 (degrades per hop) |
+| `gossip_shared` | Record of sharing gossip | 2.0 |
+
+After Prompt I, additional types: `episode_summary`, `period_summary`, `conversation` (replaces dialogue).
+
+---
+
+## Cost Budget
+
+| System | Monthly Cost |
+|--------|-------------|
+| Embeddings (768-dim, Prompt I) | $0.17 |
+| Conversation impact analysis (Prompt J) | $0.60 |
+| Memory compression (Prompt L) | $0.42 |
+| Reflections (Prompt L, 5Q×5I) | $4.62 |
+| Core memory updates | $0.30 |
+| Recursive planning (Prompt N) | $3.90 |
+| Reaction evaluations (Prompt N) | $1.80 |
+| Tree traversal (Prompt N) | $0.90 |
+| **Total AI ops (excluding dialogue)** | **~$12.71/month** |
+
+Dialogue generation (existing Gemini Flash calls) is the main cost and already running.
+
+---
 
 ## Coding Conventions
 - GDScript style: snake_case for variables/functions, PascalCase for classes/nodes
 - Use signals for decoupled communication between systems
-- Use Autoloads for global systems: `GameClock`, `EventBus`, `CrimeSystem`, `ReputationSystem`
 - ALWAYS use typed GDScript: `var health: int = 100`, `func get_mood() -> float:`
-- Comments on WHY, not WHAT. The code should be readable without comments
+- Comments on WHY, not WHAT
 - Keep scripts under 300 lines. Split into components if growing
-- Test simulation logic with print statements and a debug overlay
+- Test with print statements and F3 debug overlay
+- `await` for all Gemini API calls (they're async)
 
-## Workflow Rules
-- ALWAYS plan before coding. Write approach in a comment or SCRATCHPAD.md first
-- Build systems incrementally: get the simplest version working, then add depth
-- Commit after each working feature with descriptive messages
-- When adding a new system, update SYSTEMS.md with its design
-- When changing NPC data structure, update npcs.json schema in data/
-- Run the game and verify visually after any significant change
-- Use Godot's built-in debugger and print() liberally
-
-## Current Phase: Phase 1 — Foundation
-Build ONE small town (8-12 buildings, 15-20 NPCs) with:
-- [x] Project setup
-- [x] Tile map with buildings (homes, shop, tavern, sheriff office, courthouse, church)
-- [x] Player movement (top-down, 4-directional, GBA Pokemon style)
-- [x] Game clock with day/night cycle
-- [x] NPC spawning with core descriptions and personality traits
-- [x] NPC pathfinding (A* on tilemap)
-- [ ] Basic needs system (hunger, energy, social)
-- [ ] Memory Stream — NPCs observe and store MemoryRecords with importance scoring
-- [ ] Memory Retrieval — recency + importance + relevance weighted retrieval
-- [ ] Daily Planning — NPCs generate morning plans (template-based v1, LLM v2)
-- [ ] Observation system — perception radius, NPCs only know what they see/hear
-- [ ] Interaction system (talk to NPCs → retrieve memories → generate response)
-- [ ] Gossip propagation — NPCs share observations during social time
-- [ ] Reflection system — periodic insight generation (rule-based v1, LLM v2)
-- [ ] Crime detection (witness-based, fed by observation system)
-- [ ] Sheriff arrest mechanic
-- [ ] Simple court trial
-- [ ] Reputation tracking (per-NPC + town-wide, driven by memory/gossip)
-- [ ] LLM integration (Gemini API for dialogue, reflection, planning)
+## Known Bugs (Fixed by Prompt K, not yet run)
+1. EnvScan fires during sleep (64 duplicate memories/day/NPC)
+2. NPCs chat while sleeping (midnight conversations)
+3. Gossip repeats to same listener endlessly
+4. Plans hallucinate NPC names ("Sheriff Barnes")
+5. Plan activity text shows at wrong location
+6. Large building conversation distance too small (64px)
+7. Finn-Clara talk 8+ times/day
+8. Day 1 has no plans (load at hour 6, trigger at hour 5)
+9. Tavern visits too brief (arrive and immediately leave)
+10. "Player" hardcoded instead of PlayerProfile.player_name
+11. Thomas routes to Church before General Store at hour 6
 
 ## IMPORTANT Reminders
 - This is a SIMULATION first, game second. Depth over polish
 - NPCs are NOT quest dispensers. They are autonomous agents living their lives
 - The player is just another entity in the simulation. No special treatment by the law
-- Wrongful convictions, corrupt officials, NPC drama — these are FEATURES not bugs
 - Every system should fail gracefully. If LLM is down, use templates. If pathfinding fails, NPC waits
-- Performance matters: 20 NPCs ticking every frame needs optimization. Use process groups and LOD for offscreen NPCs
-- Save system must capture ENTIRE world state: every NPC memory, relationship, reputation score, inventory item, time of day, pending court cases — EVERYTHING
+- Save system must capture ENTIRE world state
+- When implementing Prompts I-N, follow the dependency chain strictly: I → K → J → L → M → N

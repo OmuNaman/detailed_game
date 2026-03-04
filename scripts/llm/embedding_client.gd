@@ -8,9 +8,13 @@ const EMBEDDING_DIM: int = 768
 
 var _api_key: String = ""
 var _http: HTTPRequest
+var _http_batch: HTTPRequest
 var _pending_callbacks: Array[Callable] = []
 var _request_queue: Array[Dictionary] = []  # {text: String, callback: Callable}
 var _is_requesting: bool = false
+var _batch_queue: Array[Dictionary] = []  # {texts: Array[String], callback: Callable}
+var _is_batch_requesting: bool = false
+var _pending_batch_callback: Callable
 
 
 func _ready() -> void:
@@ -18,6 +22,9 @@ func _ready() -> void:
 	_http = HTTPRequest.new()
 	add_child(_http)
 	_http.request_completed.connect(_on_request_completed)
+	_http_batch = HTTPRequest.new()
+	add_child(_http_batch)
+	_http_batch.request_completed.connect(_on_batch_request_completed)
 
 
 func _load_api_key() -> void:
@@ -118,3 +125,89 @@ func _on_request_completed(_result: int, code: int, _headers: PackedStringArray,
 
 	# Process next queued request
 	_process_next_request()
+
+
+# --- Batch Embedding ---
+
+func embed_batch(texts: Array[String], callback: Callable) -> void:
+	## Embeds multiple texts in one API call. Callback receives Array[PackedFloat32Array].
+	## Falls back to empty arrays if API unavailable.
+	if _api_key == "" or texts.is_empty():
+		var empty_results: Array[PackedFloat32Array] = []
+		for _i: int in range(texts.size()):
+			empty_results.append(PackedFloat32Array())
+		callback.call(empty_results)
+		return
+
+	_batch_queue.append({"texts": texts, "callback": callback})
+	if not _is_batch_requesting:
+		_process_next_batch()
+
+
+func _process_next_batch() -> void:
+	if _batch_queue.is_empty():
+		_is_batch_requesting = false
+		return
+
+	_is_batch_requesting = true
+	var item: Dictionary = _batch_queue.pop_front()
+	var texts: Array = item["texts"]
+	_pending_batch_callback = item["callback"]
+
+	var url: String = API_URL + MODEL + ":batchEmbedContents?key=" + _api_key
+	var requests: Array[Dictionary] = []
+	for text: String in texts:
+		requests.append({
+			"model": "models/" + MODEL,
+			"content": {"parts": [{"text": text}]},
+			"outputDimensionality": EMBEDDING_DIM,
+		})
+	var body: Dictionary = {"requests": requests}
+	var json_body: String = JSON.stringify(body)
+	var headers: PackedStringArray = ["Content-Type: application/json"]
+	var err: Error = _http_batch.request(url, headers, HTTPClient.METHOD_POST, json_body)
+	if err != OK:
+		push_warning("EmbeddingClient: Batch HTTP request failed: %s" % error_string(err))
+		var empty_results: Array[PackedFloat32Array] = []
+		for _i: int in range(texts.size()):
+			empty_results.append(PackedFloat32Array())
+		_pending_batch_callback.call(empty_results)
+		_process_next_batch()
+
+
+func _on_batch_request_completed(_result: int, code: int, _headers: PackedStringArray, body: PackedByteArray) -> void:
+	if not _pending_batch_callback.is_valid():
+		_process_next_batch()
+		return
+
+	var cb: Callable = _pending_batch_callback
+
+	if code != 200:
+		push_warning("EmbeddingClient: Batch API returned %d" % code)
+		cb.call([] as Array[PackedFloat32Array])
+		_process_next_batch()
+		return
+
+	var json := JSON.new()
+	if json.parse(body.get_string_from_utf8()) != OK:
+		push_warning("EmbeddingClient: Failed to parse batch response")
+		cb.call([] as Array[PackedFloat32Array])
+		_process_next_batch()
+		return
+
+	# Response format: {"embeddings": [{"values": [...]}, {"values": [...]}, ...]}
+	var embeddings_data: Array = json.data.get("embeddings", [])
+	var results: Array[PackedFloat32Array] = []
+	for entry: Variant in embeddings_data:
+		if entry is Dictionary:
+			var values: Array = (entry as Dictionary).get("values", [])
+			var emb := PackedFloat32Array()
+			emb.resize(values.size())
+			for i: int in range(values.size()):
+				emb[i] = values[i]
+			results.append(emb)
+		else:
+			results.append(PackedFloat32Array())
+
+	cb.call(results)
+	_process_next_batch()
