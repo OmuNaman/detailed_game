@@ -32,6 +32,12 @@ func get_dialogue_response_async(callback: Callable) -> void:
 	# Initialize working memory for this conversation
 	_player_conv_history.clear()
 
+	# Lock NPC for player conversation
+	npc.lock_for_conversation(PlayerProfile.player_name)
+	# Cancel any NPC-NPC approach in progress
+	if npc.conversation._approaching_target != null:
+		npc.conversation._approaching_target = null
+
 	if not GeminiClient.has_api_key():
 		callback.call(_get_template_response())
 		return
@@ -101,6 +107,7 @@ func on_player_conversation_ended() -> void:
 	## Called by dialogue_box.gd when the player closes the conversation.
 	## Creates a summary memory of the entire conversation.
 	if _player_conv_history.is_empty():
+		npc.unlock_conversation()
 		return
 
 	var history_copy: Array[Dictionary] = _player_conv_history.duplicate()
@@ -124,6 +131,7 @@ func on_player_conversation_ended() -> void:
 		)
 		if OS.is_debug_build():
 			print("[ConvSummary] %s: Short conversation summary stored" % npc.npc_name)
+		npc.unlock_conversation()
 		return
 
 	# Longer conversation: use Gemini Flash to summarize
@@ -135,9 +143,12 @@ func on_player_conversation_ended() -> void:
 			[npc.npc_name, PlayerProfile.player_name] as Array[String],
 			npc._current_destination, npc._current_destination, 8.0, 0.2
 		)
+		npc.unlock_conversation()
 		return
 
 	_summarize_player_conversation(history_copy)
+	# Unlock after kicking off async summary (summary callback is fire-and-forget)
+	npc.unlock_conversation()
 
 
 # --- Context builders ---
@@ -300,6 +311,11 @@ func _build_dialogue_context() -> String:
 			context += "- %s\n" % p
 		context += "\n"
 
+	# Schedule pressure — NPC knows they should be somewhere else
+	var should_be_at: String = npc._get_schedule_destination(GameClock.hour)
+	if should_be_at != "" and should_be_at != npc._current_destination:
+		context += "Note: You should be heading to the %s soon, but you're talking to %s. You might mention needing to leave if the conversation drags on.\n\n" % [should_be_at, PlayerProfile.player_name]
+
 	context += "%s is standing in front of you and wants to talk. They recently moved to DeepTown and live in House 11. Respond naturally." % PlayerProfile.player_name
 	return context
 
@@ -398,6 +414,11 @@ func _build_dialogue_context_for_reply(player_message: String) -> String:
 		for p: String in upcoming_plans:
 			context += "- %s\n" % p
 		context += "\n"
+
+	# Schedule pressure — NPC knows they should be somewhere else
+	var should_be_at: String = npc._get_schedule_destination(GameClock.hour)
+	if should_be_at != "" and should_be_at != npc._current_destination:
+		context += "Note: You should be heading to the %s soon, but you're talking to %s. You might mention needing to leave if the conversation drags on.\n\n" % [should_be_at, PlayerProfile.player_name]
 
 	context += "%s is talking to you right now." % PlayerProfile.player_name
 	return context

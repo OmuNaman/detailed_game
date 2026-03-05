@@ -40,6 +40,14 @@ var _is_moving: bool = false
 var _astar: AStarGrid2D = null
 var _town_map: Node2D = null
 
+# Conversation lock — prevents movement and schedule changes while talking
+var _in_conversation: bool = false
+var _conversation_partner_name: String = ""
+var _conversation_lock_time: int = 0
+
+var in_conversation: bool:
+	get: return _in_conversation
+
 
 
 @onready var sprite: Sprite2D = $Sprite2D
@@ -120,6 +128,9 @@ func _ready() -> void:
 
 
 func _physics_process(delta: float) -> void:
+	if _in_conversation:
+		velocity = Vector2.ZERO
+		return
 	if not _is_moving or _path.is_empty():
 		return
 
@@ -168,11 +179,13 @@ func _arrive() -> void:
 	_is_moving = false
 	_path = PackedVector2Array()
 	velocity = Vector2.ZERO
+	_resolve_tile_collision()
 	planner.dest_arrival_time = GameClock.total_minutes  # Bug 9: Track arrival for minimum stay
 	activity.claim_work_object()
 	activity.update_activity()
 	world_knowledge.learn_building(_current_destination)
 	perception.on_arrive_at_building()
+	conversation.check_approach_arrived()
 
 
 func _get_current_day() -> int:
@@ -211,6 +224,92 @@ func _face_toward(target_pos: Vector2) -> void:
 		sprite.flip_h = false
 
 
+func lock_for_conversation(partner_name: String) -> void:
+	## Freeze this NPC for a conversation. Stops movement, schedule, and destination updates.
+	_in_conversation = true
+	_conversation_partner_name = partner_name
+	_conversation_lock_time = GameClock.total_minutes
+	if _is_moving:
+		_is_moving = false
+		_path = PackedVector2Array()
+		velocity = Vector2.ZERO
+	if OS.is_debug_build():
+		print("[Conv Lock] %s locked (talking to %s)" % [npc_name, partner_name])
+
+
+func unlock_conversation() -> void:
+	## Unfreeze this NPC after conversation ends. Resumes normal behavior.
+	var was_locked: bool = _in_conversation
+	_in_conversation = false
+	_conversation_partner_name = ""
+	_conversation_lock_time = 0
+	if was_locked:
+		_update_destination(GameClock.hour)
+		if not _is_moving:
+			activity.update_activity()
+		if OS.is_debug_build():
+			print("[Conv Lock] %s unlocked" % npc_name)
+
+
+func _resolve_tile_collision() -> void:
+	## If another NPC is on our tile, nudge to the nearest free adjacent tile.
+	var my_grid := Vector2i(int(global_position.x) / TILE_SIZE, int(global_position.y) / TILE_SIZE)
+	for other: Node in get_tree().get_nodes_in_group("npcs"):
+		if other == self:
+			continue
+		var other_npc: CharacterBody2D = other as CharacterBody2D
+		if other_npc._is_moving:
+			continue
+		var other_grid := Vector2i(int(other_npc.global_position.x) / TILE_SIZE, int(other_npc.global_position.y) / TILE_SIZE)
+		if my_grid == other_grid:
+			var free_pos: Vector2 = _find_nearest_free_tile(my_grid)
+			if free_pos != Vector2.ZERO:
+				global_position = free_pos
+				if OS.is_debug_build():
+					print("[Tile] %s: Nudged off tile to avoid stacking with %s" % [npc_name, other_npc.npc_name])
+			return
+
+
+func _find_nearest_free_tile(from_grid: Vector2i) -> Vector2:
+	## Find the closest walkable tile not occupied by any NPC or the player.
+	if _astar == null:
+		return Vector2.ZERO
+	var grid_w: int = _town_map.MAP_WIDTH if _town_map else 60
+	var grid_h: int = _town_map.MAP_HEIGHT if _town_map else 45
+	var occupied: Dictionary = {}
+	for other: Node in get_tree().get_nodes_in_group("npcs"):
+		if other == self:
+			continue
+		var o: CharacterBody2D = other as CharacterBody2D
+		if o._is_moving:
+			continue
+		occupied[Vector2i(int(o.global_position.x) / TILE_SIZE, int(o.global_position.y) / TILE_SIZE)] = true
+	var player: Node = get_tree().get_first_node_in_group("player")
+	if player:
+		occupied[Vector2i(int(player.global_position.x) / TILE_SIZE, int(player.global_position.y) / TILE_SIZE)] = true
+	for ring: int in range(1, 4):
+		var best_pos: Vector2 = Vector2.ZERO
+		var best_dist: float = INF
+		for dx: int in range(-ring, ring + 1):
+			for dy: int in range(-ring, ring + 1):
+				if dx == 0 and dy == 0:
+					continue
+				var check := Vector2i(from_grid.x + dx, from_grid.y + dy)
+				if check.x < 0 or check.x >= grid_w or check.y < 0 or check.y >= grid_h:
+					continue
+				if _astar.is_point_solid(check):
+					continue
+				if occupied.has(check):
+					continue
+				var d: float = from_grid.distance_to(Vector2(check))
+				if d < best_dist:
+					best_dist = d
+					best_pos = Vector2(check.x * TILE_SIZE + TILE_SIZE / 2, check.y * TILE_SIZE + TILE_SIZE / 2)
+		if best_pos != Vector2.ZERO:
+			return best_pos
+	return Vector2.ZERO
+
+
 func _on_hour_changed(hour: int) -> void:
 	# Midnight: reset counts + run memory maintenance + clear L2/L3 plans
 	if hour == 0:
@@ -232,9 +331,10 @@ func _on_hour_changed(hour: int) -> void:
 	# Instant hunger restoration at meal times if at home
 	if _current_destination == home_building and hour in [7, 12, 19]:
 		hunger = minf(hunger + 30.0, 100.0)
-	_update_destination(hour)
+	if not _in_conversation:
+		_update_destination(hour)
 	# Activities change by time of day even without destination change
-	if not _is_moving:
+	if not _is_moving and not _in_conversation:
 		activity.update_activity()
 	if OS.is_debug_build():
 		print("[Activity] %s: %s (at %s)" % [npc_name, current_activity, _current_destination])
@@ -267,7 +367,7 @@ func _on_time_tick(_game_minute: int) -> void:
 		planner.tick_decomposition()
 
 	# Re-evaluate destination every 5 game minutes based on needs
-	if GameClock.total_minutes % 5 == 0:
+	if GameClock.total_minutes % 5 == 0 and not _in_conversation:
 		var new_dest: String = _get_schedule_destination(GameClock.hour)
 		if new_dest != _current_destination:
 			# Bug 9: Enforce minimum stay (except emergencies and sleep)
@@ -277,8 +377,18 @@ func _on_time_tick(_game_minute: int) -> void:
 				_update_destination(GameClock.hour)
 
 	# Try NPC-to-NPC conversation every 15 game minutes when not moving
-	if GameClock.total_minutes % 15 == 0 and not _is_moving:
+	if GameClock.total_minutes % 15 == 0 and not _is_moving and not _in_conversation:
 		conversation.try_npc_conversation()
+
+	# Safety: unlock if conversation locked for too long (15+ game minutes)
+	if _in_conversation and _conversation_lock_time > 0:
+		if GameClock.total_minutes - _conversation_lock_time > 15:
+			push_warning("[Conv Lock] %s: Safety timeout after 15 min" % npc_name)
+			unlock_conversation()
+
+	# Check conversation approach completion
+	if conversation._approaching_target != null and not _is_moving:
+		conversation.check_approach_arrived()
 
 	# Periodic perception scan every 30 game minutes (fix for already-overlapping bodies)
 	if GameClock.total_minutes % 30 == 0:
@@ -315,6 +425,8 @@ func on_player_conversation_ended() -> void:
 
 func _update_destination(hour: int) -> void:
 	if _astar == null:
+		return
+	if _in_conversation:
 		return
 
 	var dest: String = _get_schedule_destination(hour)
@@ -393,6 +505,8 @@ func _get_schedule_destination(hour: int) -> String:
 
 	# Emergency overrides (ALWAYS highest priority)
 	if hunger < 20.0 or energy < 20.0:
+		if conversation._approaching_target != null:
+			conversation._approaching_target = null
 		return home_building
 
 	# Sleep time — everyone goes home (ALWAYS)

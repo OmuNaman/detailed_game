@@ -1,6 +1,7 @@
 extends Node
-## Handles NPC-to-NPC conversations: triggering, turn-by-turn generation,
+## Handles NPC-to-NPC conversations: approach-then-talk, turn-by-turn generation,
 ## topic selection, impact analysis, speech bubbles, and gossip exchange.
+## NPCs now walk to each other before talking and are locked during conversation.
 
 var npc: CharacterBody2D
 
@@ -8,7 +9,7 @@ var npc: CharacterBody2D
 var _last_conversation_time: Dictionary = {}  # {npc_name: game_time}
 const CONVERSATION_COOLDOWN: int = 120  # 2 game hours between conversations with same NPC
 
-# Bug 7: Conversation spam prevention
+# Conversation spam prevention
 var _conv_counts_today: Dictionary = {}      # "A:B" -> int
 const MAX_CONV_PER_PAIR_PER_DAY: int = 3
 const COOLDOWN_COHABIT_MINUTES: int = 240    # 4 game hours for cohabitants
@@ -19,6 +20,10 @@ var _npc_conv_totals: Dictionary = {}  # "OtherName" -> int (lifetime count)
 const NPC_CONV_MAX_TURNS: int = 6   # Up to 6 turns (3 exchanges)
 const NPC_CONV_MIN_TURNS: int = 2   # At least 1 exchange
 
+# Approach state — NPC walks toward target before starting conversation
+var _approaching_target: CharacterBody2D = null
+var _approach_topic: String = ""
+
 
 func _ready() -> void:
 	npc = get_parent() as CharacterBody2D
@@ -27,12 +32,20 @@ func _ready() -> void:
 func reset_daily_counts() -> void:
 	## Called at midnight from controller._on_hour_changed().
 	_conv_counts_today.clear()
+	_approaching_target = null
+	_approach_topic = ""
 
+
+# --- Conversation initiation with approach phase ---
 
 func try_npc_conversation() -> void:
-	## If another NPC is within range and we haven't talked recently, have a real conversation.
+	## Find a nearby NPC to talk to. If found, walk over first, then start conversation.
 
-	# Bug 2: Don't chat while sleeping or during night hours
+	# Already in a conversation or approaching someone
+	if npc.in_conversation or _approaching_target != null:
+		return
+
+	# Don't chat while sleeping or during night hours
 	if npc.current_activity.begins_with("sleeping"):
 		return
 	if GameClock.hour >= 22 or GameClock.hour < 5:
@@ -43,16 +56,34 @@ func try_npc_conversation() -> void:
 			continue
 		var other_npc: CharacterBody2D = other as CharacterBody2D
 
-		# Bug 2: Other NPC must also be awake
+		# Other NPC must be awake
 		if other_npc.current_activity.begins_with("sleeping"):
 			continue
 
-		# Bug 6: Building-aware conversation distance
+		# Skip if other NPC is already in a conversation
+		if other_npc.in_conversation:
+			continue
+
+		# Skip if other NPC is being approached by someone else
+		var being_approached: bool = false
+		for check_node: Node in npc.get_tree().get_nodes_in_group("npcs"):
+			if check_node == npc:
+				continue
+			var check: CharacterBody2D = check_node as CharacterBody2D
+			if check.conversation._approaching_target == other_npc:
+				being_approached = true
+				break
+		if being_approached:
+			continue
+
+		# Building-aware conversation distance
 		var dist: float = other_npc.global_position.distance_to(npc.global_position)
 		var same_building: bool = npc._current_destination != "" and npc._current_destination == other_npc._current_destination
 		var max_dist: float = 192.0 if same_building else 64.0
 		if dist > max_dist:
 			continue
+
+		# Skip if other NPC is moving between buildings
 		if other_npc._is_moving:
 			continue
 
@@ -63,45 +94,235 @@ func try_npc_conversation() -> void:
 			if GameClock.total_minutes - _last_conversation_time[other_name] < CONVERSATION_COOLDOWN:
 				continue
 
-		# Bug 7: Daily cap per pair
+		# Daily cap per pair
 		var pair: String = npc._pair_key(npc.npc_name, other_name)
 		if _conv_counts_today.get(pair, 0) >= MAX_CONV_PER_PAIR_PER_DAY:
 			continue
 
-		# Bug 7: Extended cooldown for cohabitants (same building)
-		if npc._current_destination != "" and npc._current_destination == other_npc._current_destination:
+		# Extended cooldown for cohabitants (same building)
+		if same_building:
 			if _last_conversation_time.has(other_name):
 				var mins_since: int = GameClock.total_minutes - _last_conversation_time[other_name]
 				if mins_since < COOLDOWN_COHABIT_MINUTES:
 					continue
 
-		# Set cooldown for both
-		_last_conversation_time[other_name] = GameClock.total_minutes
-		other_npc.conversation._last_conversation_time[npc.npc_name] = GameClock.total_minutes
-		_conv_counts_today[pair] = _conv_counts_today.get(pair, 0) + 1
+		# FOUND a valid partner — check if we need to walk over
+		if dist <= 48.0:
+			# Already adjacent (within 1.5 tiles) — start immediately
+			_begin_conversation(other_npc)
+		else:
+			# Need to walk over first
+			_start_approach(other_npc)
 
-		# Face each other
-		npc._face_toward(other_npc.global_position)
-		other_npc._face_toward(npc.global_position)
-
-		# Social boost for both
-		npc.social = minf(npc.social + 5.0, 100.0)
-		other_npc.social = minf(other_npc.social + 5.0, 100.0)
-
-		# If no API key, fall back to fake topic-label system
-		if not GeminiClient.has_api_key():
-			_fake_npc_conversation(other_npc)
-			break
-
-		# Real conversation: I speak first, then they reply
-		_real_npc_conversation(other_npc)
-		break  # Only one conversation per tick
+		break  # Only one conversation attempt per tick
 
 
-func _fake_npc_conversation(other_npc: CharacterBody2D) -> void:
-	## Fallback when Gemini is unavailable. Same as old behavior.
+func _start_approach(target: CharacterBody2D) -> void:
+	## Walk to an adjacent tile of the target NPC, then start conversation.
+	_approaching_target = target
+	_approach_topic = _pick_conversation_topic(target)
+
+	var adjacent_pos: Vector2 = _find_adjacent_walkable_tile(target.global_position)
+	if adjacent_pos == Vector2.ZERO:
+		# Can't find adjacent tile — try conversation from here if close enough
+		if npc.global_position.distance_to(target.global_position) <= 96.0:
+			_begin_conversation(target)
+		else:
+			_approaching_target = null
+			_approach_topic = ""
+		return
+
+	# Path to the adjacent tile using the controller's pathfinding
+	var from_grid := Vector2i(
+		int(npc.global_position.x) / npc.TILE_SIZE,
+		int(npc.global_position.y) / npc.TILE_SIZE
+	)
+	var to_grid := Vector2i(
+		int(adjacent_pos.x) / npc.TILE_SIZE,
+		int(adjacent_pos.y) / npc.TILE_SIZE
+	)
+
+	if npc._astar == null:
+		_approaching_target = null
+		_approach_topic = ""
+		return
+
+	var path: PackedVector2Array = npc._astar.get_point_path(from_grid, to_grid)
+	if path.is_empty():
+		# Can't reach them — try from current position if close enough
+		if npc.global_position.distance_to(target.global_position) <= 96.0:
+			_begin_conversation(target)
+		_approaching_target = null
+		_approach_topic = ""
+		return
+
+	# Only walk over if it's a short path (don't cross the whole town for a chat)
+	if path.size() > 12:
+		_approaching_target = null
+		_approach_topic = ""
+		return
+
+	# Set the path on the controller
+	npc._path = path
+	npc._path_index = 0
+	npc._is_moving = true
+	npc.current_activity = "walking over to %s" % target.npc_name
+	npc.activity._update_activity_label()
+
+	if OS.is_debug_build():
+		print("[Conv] %s approaching %s (%d tiles)" % [npc.npc_name, target.npc_name, path.size()])
+
+
+func _find_adjacent_walkable_tile(target_pos: Vector2) -> Vector2:
+	## Find a walkable tile adjacent to the target, not occupied by any NPC.
+	var target_grid := Vector2i(
+		int(target_pos.x) / npc.TILE_SIZE,
+		int(target_pos.y) / npc.TILE_SIZE
+	)
+
+	if npc._astar == null:
+		return Vector2.ZERO
+
+	# Collect occupied tiles (all stationary NPCs except self and target)
+	var occupied: Dictionary = {}
+	for other: Node in npc.get_tree().get_nodes_in_group("npcs"):
+		if other == npc:
+			continue
+		var other_npc: CharacterBody2D = other as CharacterBody2D
+		if other_npc._is_moving:
+			continue
+		# Don't count the target as "occupied" — we want to be NEXT to them
+		if other_npc.global_position.distance_to(target_pos) < 4.0:
+			continue
+		var og := Vector2i(
+			int(other_npc.global_position.x) / npc.TILE_SIZE,
+			int(other_npc.global_position.y) / npc.TILE_SIZE
+		)
+		occupied[og] = true
+
+	# Skip player's tile
+	var player: Node = npc.get_tree().get_first_node_in_group("player")
+	if player:
+		var pg := Vector2i(
+			int(player.global_position.x) / npc.TILE_SIZE,
+			int(player.global_position.y) / npc.TILE_SIZE
+		)
+		occupied[pg] = true
+
+	var offsets: Array[Vector2i] = [
+		Vector2i(0, 1), Vector2i(0, -1), Vector2i(-1, 0), Vector2i(1, 0),
+	]
+
+	var grid_w: int = npc._town_map.MAP_WIDTH if npc._town_map else 60
+	var grid_h: int = npc._town_map.MAP_HEIGHT if npc._town_map else 45
+
+	var my_grid := Vector2i(
+		int(npc.global_position.x) / npc.TILE_SIZE,
+		int(npc.global_position.y) / npc.TILE_SIZE
+	)
+
+	var best_pos: Vector2 = Vector2.ZERO
+	var best_dist: float = INF
+
+	for offset: Vector2i in offsets:
+		var check: Vector2i = target_grid + offset
+		if check.x < 0 or check.x >= grid_w or check.y < 0 or check.y >= grid_h:
+			continue
+		if npc._astar.is_point_solid(check):
+			continue
+		if occupied.has(check):
+			continue
+		var check_pos: Vector2 = Vector2(
+			check.x * npc.TILE_SIZE + npc.TILE_SIZE / 2,
+			check.y * npc.TILE_SIZE + npc.TILE_SIZE / 2
+		)
+		var d: float = my_grid.distance_to(Vector2(check))
+		if d < best_dist:
+			best_dist = d
+			best_pos = check_pos
+
+	return best_pos
+
+
+func check_approach_arrived() -> void:
+	## Called from controller's _arrive() and _on_time_tick().
+	## If we were approaching someone for conversation, check if we've arrived.
+	if _approaching_target == null:
+		return
+
+	if not is_instance_valid(_approaching_target):
+		_approaching_target = null
+		_approach_topic = ""
+		return
+
+	# Target became busy, started moving, or fell asleep — cancel
+	if _approaching_target.in_conversation:
+		if OS.is_debug_build():
+			print("[Conv] %s: %s is now busy, canceling approach" % [npc.npc_name, _approaching_target.npc_name])
+		_approaching_target = null
+		_approach_topic = ""
+		return
+
+	if _approaching_target._is_moving:
+		_approaching_target = null
+		_approach_topic = ""
+		return
+
+	if _approaching_target.current_activity.begins_with("sleeping"):
+		_approaching_target = null
+		_approach_topic = ""
+		return
+
+	# Check if we've arrived close enough
+	var dist: float = npc.global_position.distance_to(_approaching_target.global_position)
+	if dist <= 48.0 and not npc._is_moving:
+		var target: CharacterBody2D = _approaching_target
+		_approaching_target = null
+		_begin_conversation(target)
+
+
+func _begin_conversation(other_npc: CharacterBody2D) -> void:
+	## Lock both NPCs, face each other, and start the actual dialogue exchange.
 	var other_name: String = other_npc.npc_name
-	var topic: String = _pick_conversation_topic(other_npc)
+
+	# Lock both NPCs
+	npc.lock_for_conversation(other_name)
+	other_npc.lock_for_conversation(npc.npc_name)
+
+	# Face each other
+	npc._face_toward(other_npc.global_position)
+	other_npc._face_toward(npc.global_position)
+
+	# Social boost for both
+	npc.social = minf(npc.social + 5.0, 100.0)
+	other_npc.social = minf(other_npc.social + 5.0, 100.0)
+
+	# Set cooldown for both
+	_last_conversation_time[other_name] = GameClock.total_minutes
+	other_npc.conversation._last_conversation_time[npc.npc_name] = GameClock.total_minutes
+	var pair: String = npc._pair_key(npc.npc_name, other_name)
+	_conv_counts_today[pair] = _conv_counts_today.get(pair, 0) + 1
+
+	# Update activity display
+	npc.current_activity = "talking with %s" % other_name
+	npc.activity._update_activity_label()
+	other_npc.current_activity = "talking with %s" % npc.npc_name
+	other_npc.activity._update_activity_label()
+
+	# Run conversation (Gemini or template)
+	if not GeminiClient.has_api_key() or GeminiClient._request_queue.size() > 10:
+		_fake_npc_conversation_locked(other_npc)
+	else:
+		_real_npc_conversation_locked(other_npc)
+
+
+# --- Locked conversation runners ---
+
+func _fake_npc_conversation_locked(other_npc: CharacterBody2D) -> void:
+	## Template conversation with lock/unlock lifecycle.
+	var other_name: String = other_npc.npc_name
+	var topic: String = _approach_topic if _approach_topic != "" else _pick_conversation_topic(other_npc)
+	_approach_topic = ""
 
 	npc._add_memory_with_embedding(
 		"Had a conversation with %s about %s at the %s" % [other_name, topic, npc._current_destination],
@@ -113,10 +334,10 @@ func _fake_npc_conversation(other_npc: CharacterBody2D) -> void:
 		"dialogue", npc.npc_name, [other_npc.npc_name, npc.npc_name] as Array[String],
 		npc._current_destination, npc._current_destination, 3.0, 0.2
 	)
-	# Fake conversations still get flat bump (no content to analyze)
+	# Fake conversations still get flat bump
 	Relationships.modify_mutual(npc.npc_name, other_name, 1, 1, 0)
 
-	# Gossip phase — both NPCs may share something
+	# Gossip phase
 	var gossip_mem: Dictionary = npc.gossip.pick_gossip_for(other_npc)
 	if not gossip_mem.is_empty():
 		npc.gossip.share_gossip_with(other_npc, gossip_mem)
@@ -126,16 +347,17 @@ func _fake_npc_conversation(other_npc: CharacterBody2D) -> void:
 
 	print("[%s] Chatted with %s about %s (template)" % [npc.npc_name, other_name, topic])
 
+	# Unlock both NPCs
+	npc.unlock_conversation()
+	if is_instance_valid(other_npc):
+		other_npc.unlock_conversation()
 
-func _real_npc_conversation(other_npc: CharacterBody2D) -> void:
-	## Turn-by-turn Gemini-powered conversation (up to 6 turns).
 
-	# Skip if Gemini queue is backed up (cost control)
-	if GeminiClient._request_queue.size() > 10:
-		_fake_npc_conversation(other_npc)
-		return
+func _real_npc_conversation_locked(other_npc: CharacterBody2D) -> void:
+	## Turn-by-turn Gemini-powered conversation with lock/unlock lifecycle.
+	var topic: String = _approach_topic if _approach_topic != "" else _pick_conversation_topic(other_npc)
+	_approach_topic = ""
 
-	var topic: String = _pick_conversation_topic(other_npc)
 	var max_turns: int = NPC_CONV_MAX_TURNS
 	if GeminiClient._request_queue.size() > 5:
 		max_turns = 2  # Throttle when busy
@@ -143,7 +365,12 @@ func _real_npc_conversation(other_npc: CharacterBody2D) -> void:
 	# Start the recursive turn chain
 	_run_conversation_turn(npc, other_npc, [], 0, max_turns, topic,
 		func(history: Array[Dictionary]) -> void:
+			# Safety: unlock whoever is still valid if something went wrong
 			if not is_instance_valid(npc) or not is_instance_valid(other_npc):
+				if is_instance_valid(npc):
+					npc.unlock_conversation()
+				if is_instance_valid(other_npc):
+					other_npc.unlock_conversation()
 				return
 
 			var other_name: String = other_npc.npc_name
@@ -185,7 +412,7 @@ func _real_npc_conversation(other_npc: CharacterBody2D) -> void:
 				GeminiClient._request_queue.size()
 			])
 
-			# Gossip phase (now 20% chance)
+			# Gossip phase (20% chance)
 			var gossip_mem: Dictionary = npc.gossip.pick_gossip_for(other_npc)
 			if not gossip_mem.is_empty():
 				npc.gossip.share_gossip_with(other_npc, gossip_mem)
@@ -194,8 +421,15 @@ func _real_npc_conversation(other_npc: CharacterBody2D) -> void:
 				var reverse_gossip: Dictionary = other_npc.gossip.pick_gossip_for(npc)
 				if not reverse_gossip.is_empty():
 					other_npc.gossip.share_gossip_with(npc, reverse_gossip)
+
+			# Unlock both NPCs AFTER all processing
+			npc.unlock_conversation()
+			if is_instance_valid(other_npc):
+				other_npc.unlock_conversation()
 	)
 
+
+# --- Turn-by-turn generation ---
 
 func _run_conversation_turn(speaker: CharacterBody2D, listener: CharacterBody2D,
 		history: Array[Dictionary], turn: int, max_turns: int,
@@ -269,10 +503,10 @@ func _build_npc_chat_context_for_turn(other_npc: CharacterBody2D, topic: String,
 	var period: String = "morning" if hour < 12 else ("afternoon" if hour < 17 else ("evening" if hour < 21 else "night"))
 	context += "It's %s at the %s. " % [period, npc._current_destination]
 
-	if npc.current_activity != "":
-		context += "You are currently %s. " % npc.current_activity
-	if other_npc.current_activity != "":
-		context += "%s is currently %s. " % [other_npc.npc_name, other_npc.current_activity]
+	if npc.current_activity != "" and not npc.current_activity.begins_with("talking with"):
+		context += "You were %s before this conversation. " % npc.current_activity
+	if other_npc.current_activity != "" and not other_npc.current_activity.begins_with("talking with"):
+		context += "%s was %s. " % [other_npc.npc_name, other_npc.current_activity]
 
 	# Relationship
 	var trust_l: String = Relationships.get_trust_label(npc.npc_name, other_npc.npc_name)

@@ -62,8 +62,11 @@ func hide_dialogue() -> void:
 	is_showing = false
 
 	# Notify NPC to create conversation summary memory
-	if _current_npc and _current_npc.has_method("on_player_conversation_ended"):
+	if _current_npc and is_instance_valid(_current_npc):
 		_current_npc.on_player_conversation_ended()
+		# Safety: force unlock if still locked after conversation end
+		if _current_npc.in_conversation:
+			_current_npc.unlock_conversation()
 	_current_npc = null
 
 	# Re-enable player movement

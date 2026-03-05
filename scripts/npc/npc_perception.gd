@@ -19,6 +19,9 @@ func on_perception_body_entered(body: Node2D) -> void:
 		return
 	if not (body is CharacterBody2D):
 		return
+	# Skip NPC observations during conversation (still notice player)
+	if npc.in_conversation and body.is_in_group("npcs"):
+		return
 
 	var actor_name: String = ""
 	if body.is_in_group("player"):
@@ -97,6 +100,9 @@ func scan_environment() -> void:
 
 	# Bug 1: Don't scan while sleeping
 	if npc.current_activity.begins_with("sleeping"):
+		return
+
+	if npc.in_conversation:
 		return
 
 	if GameClock.total_minutes - _last_environment_scan < ENVIRONMENT_SCAN_INTERVAL:

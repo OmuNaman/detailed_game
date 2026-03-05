@@ -78,6 +78,10 @@ func _handle_interact() -> void:
 	if nearest_npc == null:
 		return
 
+	# Can't talk to NPC already in conversation
+	if nearest_npc.in_conversation:
+		return
+
 	# NPC faces toward player
 	nearest_npc._face_toward(global_position)
 
