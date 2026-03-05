@@ -1,7 +1,15 @@
-[gd_scene load_steps=5 format=3 uid="uid://cnpc001"]
+[gd_scene load_steps=13 format=3 uid="uid://cnpc001"]
 
 [ext_resource type="Script" path="res://scripts/npc/npc_controller.gd" id="1_script"]
 [ext_resource type="Texture2D" path="res://assets/sprites/characters/player_down.png" id="2_sprite"]
+[ext_resource type="Script" path="res://scripts/npc/npc_world_knowledge.gd" id="3_world_knowledge"]
+[ext_resource type="Script" path="res://scripts/npc/npc_gossip.gd" id="4_gossip"]
+[ext_resource type="Script" path="res://scripts/npc/npc_perception.gd" id="5_perception"]
+[ext_resource type="Script" path="res://scripts/npc/npc_reflection.gd" id="6_reflection"]
+[ext_resource type="Script" path="res://scripts/npc/npc_activity.gd" id="7_activity"]
+[ext_resource type="Script" path="res://scripts/npc/npc_planner.gd" id="8_planner"]
+[ext_resource type="Script" path="res://scripts/npc/npc_dialogue.gd" id="9_dialogue"]
+[ext_resource type="Script" path="res://scripts/npc/npc_conversation.gd" id="10_conversation"]
 
 [sub_resource type="RectangleShape2D" id="RectangleShape2D_npc"]
 size = Vector2(20, 12)
@@ -40,3 +48,27 @@ theme_override_constants/shadow_offset_x = 1
 theme_override_constants/shadow_offset_y = 1
 theme_override_font_sizes/font_size = 8
 text = "NPC"
+
+[node name="NPCWorldKnowledge" type="Node" parent="."]
+script = ExtResource("3_world_knowledge")
+
+[node name="NPCGossip" type="Node" parent="."]
+script = ExtResource("4_gossip")
+
+[node name="NPCPerception" type="Node" parent="."]
+script = ExtResource("5_perception")
+
+[node name="NPCReflection" type="Node" parent="."]
+script = ExtResource("6_reflection")
+
+[node name="NPCActivity" type="Node" parent="."]
+script = ExtResource("7_activity")
+
+[node name="NPCPlanner" type="Node" parent="."]
+script = ExtResource("8_planner")
+
+[node name="NPCDialogue" type="Node" parent="."]
+script = ExtResource("9_dialogue")
+
+[node name="NPCConversation" type="Node" parent="."]
+script = ExtResource("10_conversation")
