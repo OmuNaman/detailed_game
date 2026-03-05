@@ -491,4 +491,3 @@ func _process_embedding_queue() -> void:
 			print("[Memory] %s: batch embedded %d memories (%d still queued)" % [
 				npc_name, batch.size(), _embedding_queue.size()])
 	)
-
