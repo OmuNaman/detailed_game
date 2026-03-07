@@ -27,12 +27,6 @@ var social: float = 100.0
 # Three-tier memory system (replaces old flat MemoryStream)
 var memory: MemorySystem = MemorySystem.new()
 
-# Embedding queue — batch-processes pending embeddings every 5 real seconds
-var _embedding_queue: Array[Dictionary] = []
-var _embedding_timer: float = 0.0
-const EMBEDDING_BATCH_INTERVAL: float = 5.0
-const EMBEDDING_BATCH_SIZE: int = 10
-
 # A* waypoint following
 var _path: PackedVector2Array = PackedVector2Array()
 var _path_index: int = 0
@@ -164,13 +158,6 @@ func _physics_process(delta: float) -> void:
 		sprite.flip_h = false
 
 
-func _process(delta: float) -> void:
-	# Batch-process pending embeddings every EMBEDDING_BATCH_INTERVAL real seconds
-	if _embedding_queue.size() > 0:
-		_embedding_timer += delta
-		if _embedding_timer >= EMBEDDING_BATCH_INTERVAL:
-			_embedding_timer = 0.0
-			_process_embedding_queue()
 
 
 func _arrive() -> void:
@@ -553,14 +540,34 @@ func _get_schedule_destination(hour: int) -> String:
 func _add_memory_with_embedding(description: String, type: String, actor: String,
 		participants: Array[String], observer_loc: String, observed_loc: String,
 		importance: float, valence: float) -> void:
-	## Creates the memory record via MemorySystem (with deduplication),
-	## then queues an async batch embedding request.
-	var mem: Dictionary = memory.add_memory(description, type, actor, participants,
-		observer_loc, observed_loc, importance, valence)
-
-	# Queue embedding (processed in batches every 5 seconds)
-	if mem.get("embedding", PackedFloat32Array()).is_empty():
-		_embedding_queue.append(mem)
+	## Routes memory creation to the Python backend via ApiClient.
+	## Falls back to local MemorySystem if backend is unavailable.
+	if ApiClient.is_available():
+		var body: Dictionary = {
+			"text": description,
+			"type": type,
+			"actor": actor,
+			"participants": Array(participants),
+			"observer_location": observer_loc,
+			"observed_near": observed_loc,
+			"importance": importance,
+			"valence": valence,
+			"game_time": GameClock.total_minutes,
+			"game_day": GameClock.total_minutes / 1440,
+			"game_hour": GameClock.hour,
+		}
+		ApiClient.post("/memory/%s/add" % npc_name, body, func(response: Dictionary, success: bool) -> void:
+			if success and OS.is_debug_build():
+				print("[Memory API] %s: stored '%s'" % [npc_name, description.left(60)])
+			elif not success:
+				# Fallback: store locally if API failed
+				memory.add_memory(description, type, actor, participants,
+					observer_loc, observed_loc, importance, valence)
+		)
+	else:
+		# No backend — use local memory system
+		memory.add_memory(description, type, actor, participants,
+			observer_loc, observed_loc, importance, valence)
 
 	# Reflection trigger: delegate importance tracking to reflection component
 	if reflection:
@@ -569,29 +576,3 @@ func _add_memory_with_embedding(description: String, type: String, actor: String
 	# Safety valve: compress if episodic memories grow too large
 	if memory.episodic_memories.size() > 500 and reflection:
 		reflection._compress_memories()
-
-
-func _process_embedding_queue() -> void:
-	## Process pending embeddings in batches using the batch API.
-	if _embedding_queue.is_empty():
-		return
-	var batch: Array[Dictionary] = []
-	var batch_count: int = mini(EMBEDDING_BATCH_SIZE, _embedding_queue.size())
-	for i: int in range(batch_count):
-		batch.append(_embedding_queue[i])
-	_embedding_queue = _embedding_queue.slice(batch_count)
-
-	var texts: Array[String] = []
-	for mem: Dictionary in batch:
-		texts.append(mem.get("text", mem.get("description", "")))
-
-	if not EmbeddingClient.has_api_key():
-		return
-
-	EmbeddingClient.embed_batch(texts, func(embeddings: Array[PackedFloat32Array]) -> void:
-		for i: int in range(mini(batch.size(), embeddings.size())):
-			batch[i]["embedding"] = embeddings[i]
-		if OS.is_debug_build():
-			print("[Memory] %s: batch embedded %d memories (%d still queued)" % [
-				npc_name, batch.size(), _embedding_queue.size()])
-	)

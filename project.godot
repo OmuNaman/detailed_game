@@ -24,11 +24,22 @@ config/icon="res://icon.svg"
 
 EventBus="*res://scripts/core/event_bus.gd"
 GameClock="*res://scripts/core/game_clock.gd"
-EmbeddingClient="*res://scripts/llm/embedding_client.gd"
 GeminiClient="*res://scripts/llm/gemini_client.gd"
 PlayerProfile="*res://scripts/core/player_profile.gd"
 WorldObjects="*res://scripts/core/world_objects.gd"
 Relationships="*res://scripts/core/relationships.gd"
+ApiClient="*res://scripts/core/api_client.gd"
+
+[debug]
+
+gdscript/warnings/unused_variable=0
+gdscript/warnings/unused_parameter=0
+gdscript/warnings/unused_signal=0
+gdscript/warnings/shadowed_variable=0
+gdscript/warnings/shadowed_variable_base_class=0
+gdscript/warnings/standalone_expression=0
+gdscript/warnings/integer_division=0
+gdscript/warnings/narrowing_conversion=0
 
 [display]
 
@@ -75,19 +86,6 @@ quicksave={
 "events": [Object(InputEventKey,"resource_local_to_scene":false,"resource_name":"","device":-1,"window_id":0,"alt_pressed":false,"shift_pressed":false,"ctrl_pressed":false,"meta_pressed":false,"pressed":false,"keycode":0,"physical_keycode":4194338,"key_label":0,"unicode":0,"location":0,"echo":false,"script":null)
 ]
 }
-
-[debug]
-
-gdscript/warnings/untyped_declaration=0
-gdscript/warnings/unused_parameter=0
-gdscript/warnings/unused_variable=0
-gdscript/warnings/unused_signal=0
-gdscript/warnings/return_value_discarded=0
-gdscript/warnings/integer_division=0
-gdscript/warnings/narrowing_conversion=0
-gdscript/warnings/shadowed_variable=0
-gdscript/warnings/shadowed_variable_base_class=0
-gdscript/warnings/standalone_expression=0
 
 [rendering]
 

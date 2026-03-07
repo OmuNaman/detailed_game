@@ -18,15 +18,15 @@ var total_requests: int = 0
 
 
 func _ready() -> void:
-	var file := FileAccess.open("user://.env", FileAccess.READ)
+	var file := FileAccess.open("res://.env", FileAccess.READ)
 	if file:
 		_api_key = file.get_line().strip_edges()
 		if _api_key != "":
-			print("[GeminiClient] API key loaded from user://.env")
+			print("[GeminiClient] API key loaded from res://.env")
 		else:
 			push_warning("GeminiClient: .env file is empty — dialogue generation disabled")
 	else:
-		push_warning("GeminiClient: No API key found at user://.env — dialogue generation disabled")
+		push_warning("GeminiClient: No API key found at res://.env — dialogue generation disabled")
 
 	_http = HTTPRequest.new()
 	_http.timeout = 5.0

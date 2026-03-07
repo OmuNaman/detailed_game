@@ -1,5 +1,5 @@
 extends Node
-## Stores player identity. Loaded from user://player_profile.json.
+## Stores player identity. Loaded from res://data/player_profile.json.
 
 var player_name: String = "Newcomer"
 var player_home: String = "House 11"
@@ -11,7 +11,7 @@ func _ready() -> void:
 
 
 func _load_profile() -> void:
-	var file := FileAccess.open("user://player_profile.json", FileAccess.READ)
+	var file := FileAccess.open("res://data/player_profile.json", FileAccess.READ)
 	if not file:
 		return
 	var json := JSON.new()
@@ -22,7 +22,8 @@ func _load_profile() -> void:
 
 
 func save_profile() -> void:
-	var file := FileAccess.open("user://player_profile.json", FileAccess.WRITE)
+	DirAccess.make_dir_recursive_absolute("res://data")
+	var file := FileAccess.open("res://data/player_profile.json", FileAccess.WRITE)
 	if file:
 		file.store_string(JSON.stringify({
 			"name": player_name,

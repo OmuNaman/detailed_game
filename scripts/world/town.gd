@@ -84,7 +84,7 @@ func _spawn_npcs(town_map: Node2D) -> void:
 
 func _save_all_memories() -> void:
 	for npc: CharacterBody2D in get_tree().get_nodes_in_group("npcs"):
-		var folder: String = "user://npc_data/%s/" % npc.npc_name
+		var folder: String = "res://data/npc_data/%s/" % npc.npc_name
 		DirAccess.make_dir_recursive_absolute(folder)
 
 		# Save all three tiers via MemorySystem
@@ -147,14 +147,14 @@ func _save_all_memories() -> void:
 			profile_file.store_string(JSON.stringify(profile, "\t"))
 
 	Relationships.save_relationships()
-	print("[SaveManager] Saved %d NPC data folders to user://npc_data/" % get_tree().get_nodes_in_group("npcs").size())
+	print("[SaveManager] Saved %d NPC data folders to res://data/npc_data/" % get_tree().get_nodes_in_group("npcs").size())
 
 
 func _load_all_memories() -> void:
 	var loaded_any: bool = false
 	for npc: CharacterBody2D in get_tree().get_nodes_in_group("npcs"):
 		# Try new three-tier format first (episodic_memories.json + core_memory.json)
-		var ep_path: String = "user://npc_data/%s/episodic_memories.json" % npc.npc_name
+		var ep_path: String = "res://data/npc_data/%s/episodic_memories.json" % npc.npc_name
 		if FileAccess.file_exists(ep_path):
 			npc.memory.load_or_init(npc.npc_name, npc.personality, PlayerProfile.player_name)
 			print("[SaveManager] Loaded %d episodic memories for %s" % [
@@ -163,7 +163,7 @@ func _load_all_memories() -> void:
 			continue
 
 		# Fall back to old memories.json format
-		var mem_path: String = "user://npc_data/%s/memories.json" % npc.npc_name
+		var mem_path: String = "res://data/npc_data/%s/memories.json" % npc.npc_name
 		var file := FileAccess.open(mem_path, FileAccess.READ)
 		if file:
 			var json := JSON.new()
@@ -177,8 +177,8 @@ func _load_all_memories() -> void:
 	if loaded_any:
 		return
 
-	# Backward compatibility: try old flat format (user://npc_memories.json)
-	var old_file := FileAccess.open("user://npc_memories.json", FileAccess.READ)
+	# Backward compatibility: try old flat format (res://data/npc_memories.json)
+	var old_file := FileAccess.open("res://data/npc_memories.json", FileAccess.READ)
 	if not old_file:
 		print("[SaveManager] No saved memories found — fresh start")
 		return

@@ -13,7 +13,7 @@ func set_parent(parent) -> void:
 # --- Core Memory Persistence ---
 
 func save_core_memory() -> void:
-	var folder: String = "user://npc_data/%s/" % _mem._npc_name
+	var folder: String = "res://data/npc_data/%s/" % _mem._npc_name
 	DirAccess.make_dir_recursive_absolute(folder)
 	var file := FileAccess.open(folder + "core_memory.json", FileAccess.WRITE)
 	if file:
@@ -24,7 +24,7 @@ func save_core_memory() -> void:
 
 func save_all() -> void:
 	## Save all three tiers to disk.
-	var folder: String = "user://npc_data/%s/" % _mem._npc_name
+	var folder: String = "res://data/npc_data/%s/" % _mem._npc_name
 	DirAccess.make_dir_recursive_absolute(folder)
 
 	# Core memory
@@ -113,7 +113,7 @@ func deserialize_episodic(data: Dictionary) -> void:
 
 func save_embeddings() -> void:
 	## Save all embeddings as a packed binary file for efficiency.
-	var folder: String = "user://npc_data/%s/" % _mem._npc_name
+	var folder: String = "res://data/npc_data/%s/" % _mem._npc_name
 	var file := FileAccess.open(folder + "embeddings.bin", FileAccess.WRITE)
 	if not file:
 		return
@@ -127,7 +127,7 @@ func save_embeddings() -> void:
 
 
 func load_embeddings() -> void:
-	var path: String = "user://npc_data/%s/embeddings.bin" % _mem._npc_name
+	var path: String = "res://data/npc_data/%s/embeddings.bin" % _mem._npc_name
 	if not FileAccess.file_exists(path):
 		return
 	var file := FileAccess.open(path, FileAccess.READ)

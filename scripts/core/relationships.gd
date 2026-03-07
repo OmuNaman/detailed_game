@@ -138,15 +138,16 @@ func decay_all(amount: int = 1) -> void:
 # --- Persistence ---
 
 func save_relationships() -> void:
-	var file := FileAccess.open("user://relationships.json", FileAccess.WRITE)
+	DirAccess.make_dir_recursive_absolute("res://data")
+	var file := FileAccess.open("res://data/relationships.json", FileAccess.WRITE)
 	if file:
 		file.store_string(JSON.stringify(_relations, "\t"))
 		if OS.is_debug_build():
-			print("[Relationships] Saved to user://relationships.json")
+			print("[Relationships] Saved to res://data/relationships.json")
 
 
 func load_relationships() -> void:
-	var file := FileAccess.open("user://relationships.json", FileAccess.READ)
+	var file := FileAccess.open("res://data/relationships.json", FileAccess.READ)
 	if not file:
 		return
 	var json := JSON.new()

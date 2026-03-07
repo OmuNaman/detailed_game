@@ -110,7 +110,7 @@ func load_or_init(npc_name: String, personality_prompt: String, player_name: Str
 	_init_subcomponents()
 
 	# Try loading core memory
-	var core_path: String = "user://npc_data/%s/core_memory.json" % npc_name
+	var core_path: String = "res://data/npc_data/%s/core_memory.json" % npc_name
 	if FileAccess.file_exists(core_path):
 		var file := FileAccess.open(core_path, FileAccess.READ)
 		if file:
@@ -142,7 +142,7 @@ func load_or_init(npc_name: String, personality_prompt: String, player_name: Str
 		}
 
 	# Try loading episodic memories
-	var ep_path: String = "user://npc_data/%s/episodic_memories.json" % npc_name
+	var ep_path: String = "res://data/npc_data/%s/episodic_memories.json" % npc_name
 	if FileAccess.file_exists(ep_path):
 		var file := FileAccess.open(ep_path, FileAccess.READ)
 		if file:
@@ -155,7 +155,7 @@ func load_or_init(npc_name: String, personality_prompt: String, player_name: Str
 	_persistence.load_embeddings()
 
 	# Load archival summaries
-	var arch_path: String = "user://npc_data/%s/archival_summaries.json" % npc_name
+	var arch_path: String = "res://data/npc_data/%s/archival_summaries.json" % npc_name
 	if FileAccess.file_exists(arch_path):
 		var file := FileAccess.open(arch_path, FileAccess.READ)
 		if file:

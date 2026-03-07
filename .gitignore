@@ -13,3 +13,19 @@ Thumbs.db
 export/
 *.pck
 *.zip
+
+# API keys
+.env
+
+# Dynamic game data (generated at runtime)
+data/player_profile.json
+data/relationships.json
+data/npc_data/
+data/npc_memories.json
+data/chroma_db/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+*.egg-info/

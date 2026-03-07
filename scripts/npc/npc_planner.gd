@@ -42,13 +42,70 @@ func generate_daily_plan() -> void:
 	## Stanford 3-level planning: generate Level 1 (5-8 full-day activities).
 	if _planning_in_progress:
 		return
-	if not GeminiClient.has_api_key():
-		_generate_fallback_plan()
-		return
 
 	_planning_in_progress = true
 	_last_plan_day = npc._get_current_day()
 
+	if ApiClient.is_available():
+		_generate_plan_via_api()
+	elif GeminiClient.has_api_key():
+		_generate_plan_via_gemini()
+	else:
+		_planning_in_progress = false
+		_generate_fallback_plan()
+
+
+func _generate_plan_via_api() -> void:
+	var body: Dictionary = {
+		"npc_name": npc.npc_name,
+		"npc_state": _build_npc_state(),
+		"game_time": _build_game_time(),
+		"reflections": _get_recent_reflections(),
+		"relationships": _get_relationship_labels(),
+		"gossip": _get_recent_gossip(),
+		"recent_events": _get_recent_events(),
+		"npc_summaries": npc.memory.core_memory.get("npc_summaries", {}),
+		"player_name": PlayerProfile.player_name,
+		"player_summary": npc.memory.core_memory.get("player_summary", ""),
+		"world_description": npc.world_knowledge.describe_known_world(),
+	}
+	ApiClient.post("/plan/daily", body, func(response: Dictionary, success: bool) -> void:
+		_planning_in_progress = false
+		if success and response.get("success", false):
+			var raw_plans: Array = response.get("plan_level1", [])
+			_plan_level1.clear()
+			_plan_level2.clear()
+			_plan_level3.clear()
+			for p: Variant in raw_plans:
+				if p is Dictionary:
+					_plan_level1.append({
+						"start_hour": int(p.get("start_hour", 0)),
+						"end_hour": int(p.get("end_hour", 0)),
+						"location": str(p.get("location", "")),
+						"activity": str(p.get("activity", "")),
+						"decomposed": false,
+					})
+			if _plan_level1.is_empty():
+				_generate_fallback_plan()
+			elif OS.is_debug_build():
+				print("[Planning API] %s's L1 plan (%d blocks)" % [npc.npc_name, _plan_level1.size()])
+				for p: Dictionary in _plan_level1:
+					print("  %d:00-%d:00 @ %s: %s" % [p["start_hour"], p["end_hour"], p["location"], p["activity"]])
+			# Update active goals locally
+			if not _plan_level1.is_empty():
+				var plan_summary: Array[String] = []
+				for p: Dictionary in _plan_level1:
+					plan_summary.append("%s at %s (%d:00-%d:00)" % [p["activity"], p["location"], p["start_hour"], p["end_hour"]])
+				npc.memory.set_active_goals(plan_summary)
+		else:
+			if GeminiClient.has_api_key():
+				_generate_plan_via_gemini()
+			else:
+				_generate_fallback_plan()
+	)
+
+
+func _generate_plan_via_gemini() -> void:
 	var system_prompt: String = _build_level1_prompt()
 	var user_message: String = _build_planning_context()
 
@@ -64,7 +121,6 @@ func generate_daily_plan() -> void:
 		_plan_level2.clear()
 		_plan_level3.clear()
 
-		# Store plan as a memory + update core memory active goals
 		if not _plan_level1.is_empty():
 			var plan_summary: Array[String] = []
 			for p: Dictionary in _plan_level1:
@@ -311,7 +367,7 @@ func _parse_level1_plan(text: String) -> Array[Dictionary]:
 
 
 func _decompose_to_level2(l1_index: int) -> void:
-	## Break a Level 1 block into hourly steps via Flash Lite.
+	## Break a Level 1 block into hourly steps via API or Flash Lite.
 	if _decomposition_in_progress or _plan_level2.has(l1_index):
 		return
 	if l1_index < 0 or l1_index >= _plan_level1.size():
@@ -329,43 +385,76 @@ func _decompose_to_level2(l1_index: int) -> void:
 		}]
 		return
 
-	if not GeminiClient.has_api_key() or GeminiClient._request_queue.size() > 10:
+	_decomposition_in_progress = true
+
+	if ApiClient.is_available():
+		var body: Dictionary = {
+			"npc_name": npc.npc_name,
+			"npc_state": _build_npc_state(),
+			"block": {
+				"start_hour": l1["start_hour"],
+				"end_hour": l1["end_hour"],
+				"location": l1["location"],
+				"activity": l1["activity"],
+			},
+			"game_time": _build_game_time(),
+		}
+		ApiClient.post("/plan/decompose-l2", body, func(response: Dictionary, success: bool) -> void:
+			_decomposition_in_progress = false
+			if not is_instance_valid(npc):
+				return
+			if success and response.get("success", false):
+				var raw_steps: Array = response.get("steps", [])
+				var steps: Array[Dictionary] = []
+				for s: Variant in raw_steps:
+					if s is Dictionary:
+						steps.append({"hour": int(s["hour"]), "end_hour": int(s["end_hour"]), "activity": str(s["activity"])})
+				if not steps.is_empty():
+					_plan_level2[l1_index] = steps
+					if OS.is_debug_build():
+						print("[Plan L2 API] %s: Decomposed block %d into %d hourly steps" % [npc.npc_name, l1_index, steps.size()])
+					return
+			# Fallback
+			var fallback: Array[Dictionary] = []
+			for h: int in range(l1["start_hour"], l1["end_hour"]):
+				fallback.append({"hour": h, "end_hour": h + 1, "activity": l1["activity"]})
+			_plan_level2[l1_index] = fallback
+		)
+	elif GeminiClient.has_api_key() and GeminiClient._request_queue.size() <= 10:
+		var system_prompt: String = "You are %s, a %s (%s). Break this %d-hour activity block into hourly steps." % [
+			npc.npc_name, npc.job, npc.personality, duration
+		]
+		var user_msg: String = "Activity: '%s' at %s from %d:00 to %d:00.\n" % [
+			l1["activity"], l1["location"], l1["start_hour"], l1["end_hour"]
+		]
+		user_msg += "Break this into hourly steps. One line per hour.\nFormat: HOUR|ACTIVITY\n"
+		user_msg += "Example:\n6|Open the shop and arrange shelves\n7|Greet early customers and restock\n"
+		user_msg += "Only output the lines, nothing else."
+
+		GeminiClient.generate(system_prompt, user_msg,
+			func(text: String, success: bool) -> void:
+				_decomposition_in_progress = false
+				if not is_instance_valid(npc):
+					return
+				if success and text.strip_edges() != "":
+					var steps: Array[Dictionary] = _parse_level2_steps(text, l1["start_hour"], l1["end_hour"])
+					if not steps.is_empty():
+						_plan_level2[l1_index] = steps
+						if OS.is_debug_build():
+							print("[Plan L2] %s: Decomposed block %d into %d hourly steps" % [npc.npc_name, l1_index, steps.size()])
+						return
+				var fallback: Array[Dictionary] = []
+				for h: int in range(l1["start_hour"], l1["end_hour"]):
+					fallback.append({"hour": h, "end_hour": h + 1, "activity": l1["activity"]})
+				_plan_level2[l1_index] = fallback,
+			GeminiClient.MODEL_LITE
+		)
+	else:
+		_decomposition_in_progress = false
 		var steps: Array[Dictionary] = []
 		for h: int in range(l1["start_hour"], l1["end_hour"]):
 			steps.append({"hour": h, "end_hour": h + 1, "activity": l1["activity"]})
 		_plan_level2[l1_index] = steps
-		return
-
-	_decomposition_in_progress = true
-	var system_prompt: String = "You are %s, a %s (%s). Break this %d-hour activity block into hourly steps." % [
-		npc.npc_name, npc.job, npc.personality, duration
-	]
-	var user_msg: String = "Activity: '%s' at %s from %d:00 to %d:00.\n" % [
-		l1["activity"], l1["location"], l1["start_hour"], l1["end_hour"]
-	]
-	user_msg += "Break this into hourly steps. One line per hour.\nFormat: HOUR|ACTIVITY\n"
-	user_msg += "Example:\n6|Open the shop and arrange shelves\n7|Greet early customers and restock\n"
-	user_msg += "Only output the lines, nothing else."
-
-	GeminiClient.generate(system_prompt, user_msg,
-		func(text: String, success: bool) -> void:
-			_decomposition_in_progress = false
-			if not is_instance_valid(npc):
-				return
-			if success and text.strip_edges() != "":
-				var steps: Array[Dictionary] = _parse_level2_steps(text, l1["start_hour"], l1["end_hour"])
-				if not steps.is_empty():
-					_plan_level2[l1_index] = steps
-					if OS.is_debug_build():
-						print("[Plan L2] %s: Decomposed block %d into %d hourly steps" % [npc.npc_name, l1_index, steps.size()])
-					return
-			# Fallback: one entry per hour
-			var fallback: Array[Dictionary] = []
-			for h: int in range(l1["start_hour"], l1["end_hour"]):
-				fallback.append({"hour": h, "end_hour": h + 1, "activity": l1["activity"]})
-			_plan_level2[l1_index] = fallback,
-		GeminiClient.MODEL_LITE
-	)
 
 
 func _parse_level2_steps(text: String, block_start: int, block_end: int) -> Array[Dictionary]:
@@ -397,7 +486,7 @@ func _parse_level2_steps(text: String, block_start: int, block_end: int) -> Arra
 
 
 func _decompose_to_level3(l1_idx: int, l2_idx: int) -> void:
-	## Break an hourly L2 step into 5-20 minute actions via Flash Lite.
+	## Break an hourly L2 step into 5-20 minute actions via API or Flash Lite.
 	var l3_key: String = "%d_%d" % [l1_idx, l2_idx]
 	if _decomposition_in_progress or _plan_level3.has(l3_key):
 		return
@@ -408,34 +497,60 @@ func _decompose_to_level3(l1_idx: int, l2_idx: int) -> void:
 		return
 
 	var l2: Dictionary = l2_steps[l2_idx]
-
-	if not GeminiClient.has_api_key() or GeminiClient._request_queue.size() > 10:
-		_plan_level3[l3_key] = [{"start_min": 0, "end_min": 60, "activity": l2["activity"]}]
-		return
+	var l1: Dictionary = _plan_level1[l1_idx]
 
 	_decomposition_in_progress = true
-	var l1: Dictionary = _plan_level1[l1_idx]
-	var system_prompt: String = "You are %s, a %s. Break this 1-hour activity into 3-6 specific actions (5-20 min each)." % [npc.npc_name, npc.job]
-	var user_msg: String = "Hour %d:00 at %s: '%s'\n" % [l2["hour"], l1["location"], l2["activity"]]
-	user_msg += "Format: START_MIN-END_MIN|ACTION\nExample:\n0-10|Unlock the front door and light the stove\n10-30|Knead bread dough for today's loaves\n30-50|Shape loaves and place in oven\n50-60|Clean up workspace\n"
-	user_msg += "Minutes must be 0-60, covering the full hour. Only output lines."
 
-	GeminiClient.generate(system_prompt, user_msg,
-		func(text: String, success: bool) -> void:
+	if ApiClient.is_available():
+		var body: Dictionary = {
+			"npc_name": npc.npc_name,
+			"npc_state": _build_npc_state(),
+			"hour": l2["hour"],
+			"location": l1["location"],
+			"activity": l2["activity"],
+			"game_time": _build_game_time(),
+		}
+		ApiClient.post("/plan/decompose-l3", body, func(response: Dictionary, success: bool) -> void:
 			_decomposition_in_progress = false
 			if not is_instance_valid(npc):
 				return
-			if success and text.strip_edges() != "":
-				var steps: Array[Dictionary] = _parse_level3_steps(text)
+			if success and response.get("success", false):
+				var raw_steps: Array = response.get("steps", [])
+				var steps: Array[Dictionary] = []
+				for s: Variant in raw_steps:
+					if s is Dictionary:
+						steps.append({"start_min": int(s["start_min"]), "end_min": int(s["end_min"]), "activity": str(s["activity"])})
 				if not steps.is_empty():
 					_plan_level3[l3_key] = steps
 					if OS.is_debug_build():
-						print("[Plan L3] %s: Decomposed L2[%d][%d] into %d fine actions" % [npc.npc_name, l1_idx, l2_idx, steps.size()])
+						print("[Plan L3 API] %s: Decomposed L2[%d][%d] into %d fine actions" % [npc.npc_name, l1_idx, l2_idx, steps.size()])
 					return
-			# Fallback: single entry
-			_plan_level3[l3_key] = [{"start_min": 0, "end_min": 60, "activity": l2["activity"]}],
-		GeminiClient.MODEL_LITE
-	)
+			_plan_level3[l3_key] = [{"start_min": 0, "end_min": 60, "activity": l2["activity"]}]
+		)
+	elif GeminiClient.has_api_key() and GeminiClient._request_queue.size() <= 10:
+		var system_prompt: String = "You are %s, a %s. Break this 1-hour activity into 3-6 specific actions (5-20 min each)." % [npc.npc_name, npc.job]
+		var user_msg: String = "Hour %d:00 at %s: '%s'\n" % [l2["hour"], l1["location"], l2["activity"]]
+		user_msg += "Format: START_MIN-END_MIN|ACTION\nExample:\n0-10|Unlock the front door and light the stove\n10-30|Knead bread dough for today's loaves\n30-50|Shape loaves and place in oven\n50-60|Clean up workspace\n"
+		user_msg += "Minutes must be 0-60, covering the full hour. Only output lines."
+
+		GeminiClient.generate(system_prompt, user_msg,
+			func(text: String, success: bool) -> void:
+				_decomposition_in_progress = false
+				if not is_instance_valid(npc):
+					return
+				if success and text.strip_edges() != "":
+					var steps: Array[Dictionary] = _parse_level3_steps(text)
+					if not steps.is_empty():
+						_plan_level3[l3_key] = steps
+						if OS.is_debug_build():
+							print("[Plan L3] %s: Decomposed L2[%d][%d] into %d fine actions" % [npc.npc_name, l1_idx, l2_idx, steps.size()])
+						return
+				_plan_level3[l3_key] = [{"start_min": 0, "end_min": 60, "activity": l2["activity"]}],
+			GeminiClient.MODEL_LITE
+		)
+	else:
+		_decomposition_in_progress = false
+		_plan_level3[l3_key] = [{"start_min": 0, "end_min": 60, "activity": l2["activity"]}]
 
 
 func _parse_level3_steps(text: String) -> Array[Dictionary]:
@@ -475,8 +590,6 @@ func evaluate_reaction(observation: String, importance: float) -> void:
 	## Evaluate whether the NPC should react to a significant observation by replanning.
 	if _reaction_in_progress or _decomposition_in_progress or _planning_in_progress:
 		return
-	if not GeminiClient.has_api_key() or GeminiClient._request_queue.size() > 10:
-		return
 	var current_time: int = GameClock.total_minutes
 	if current_time - _last_reaction_eval_time < REACTION_COOLDOWN_MINUTES:
 		return
@@ -489,26 +602,64 @@ func evaluate_reaction(observation: String, importance: float) -> void:
 	var active_plan: Dictionary = get_current_plan()
 	var current_activity_text: String = active_plan.get("reason", npc.current_activity) if not active_plan.is_empty() else npc.current_activity
 
-	var system_prompt: String = "You are %s, a %s in DeepTown. Decide if this observation warrants changing your current plans." % [npc.npc_name, npc.job]
-	var user_msg: String = "You are currently: %s at the %s.\n" % [current_activity_text, npc._current_destination]
-	user_msg += "New observation (importance %.1f): %s\n\n" % [importance, observation]
-	user_msg += "Should you CONTINUE your current activity or REACT by changing plans?\n"
-	user_msg += "If CONTINUE, just write: CONTINUE\n"
-	user_msg += "If REACT, write: REACT|LOCATION|NEW_ACTIVITY\n"
-	user_msg += "Example: REACT|Tavern|Rush to check on the commotion\n"
-	user_msg += "Only react if this is truly important enough to disrupt your plans."
-
-	GeminiClient.generate(system_prompt, user_msg,
-		func(text: String, success: bool) -> void:
+	if ApiClient.is_available():
+		var body: Dictionary = {
+			"npc_name": npc.npc_name,
+			"npc_state": _build_npc_state(),
+			"observation": observation,
+			"importance": importance,
+			"current_activity": current_activity_text,
+			"current_destination": npc._current_destination,
+			"game_time": _build_game_time(),
+		}
+		ApiClient.post("/plan/react", body, func(response: Dictionary, success: bool) -> void:
 			_reaction_in_progress = false
 			if not is_instance_valid(npc):
 				return
-			if success and text.strip_edges() != "":
-				_process_reaction_result(text.strip_edges(), observation)
+			if success and response.get("action", "CONTINUE") == "REACT":
+				var location: String = response.get("new_location", npc._current_destination)
+				var activity: String = response.get("new_activity", "reacting to event")
+				# Override the current L1 block
+				var l1_idx: int = _get_current_l1_index()
+				if l1_idx >= 0:
+					_plan_level1[l1_idx]["location"] = location
+					_plan_level1[l1_idx]["activity"] = activity
+					_plan_level2.erase(l1_idx)
+					var keys_to_erase: Array[String] = []
+					for key: String in _plan_level3.keys():
+						if key.begins_with(str(l1_idx) + "_"):
+							keys_to_erase.append(key)
+					for key: String in keys_to_erase:
+						_plan_level3.erase(key)
+				npc._update_destination(GameClock.hour)
+				if OS.is_debug_build():
+					print("[Reaction API] %s: REACT — redirecting to %s for '%s'" % [npc.npc_name, location, activity])
 			elif OS.is_debug_build():
-				print("[Reaction] %s: Evaluation failed, continuing current plan" % npc.npc_name),
-		GeminiClient.MODEL_LITE
-	)
+				print("[Reaction API] %s: CONTINUE" % npc.npc_name)
+		)
+	elif GeminiClient.has_api_key() and GeminiClient._request_queue.size() <= 10:
+		var system_prompt: String = "You are %s, a %s in DeepTown. Decide if this observation warrants changing your current plans." % [npc.npc_name, npc.job]
+		var user_msg: String = "You are currently: %s at the %s.\n" % [current_activity_text, npc._current_destination]
+		user_msg += "New observation (importance %.1f): %s\n\n" % [importance, observation]
+		user_msg += "Should you CONTINUE your current activity or REACT by changing plans?\n"
+		user_msg += "If CONTINUE, just write: CONTINUE\n"
+		user_msg += "If REACT, write: REACT|LOCATION|NEW_ACTIVITY\n"
+		user_msg += "Example: REACT|Tavern|Rush to check on the commotion\n"
+		user_msg += "Only react if this is truly important enough to disrupt your plans."
+
+		GeminiClient.generate(system_prompt, user_msg,
+			func(text: String, success: bool) -> void:
+				_reaction_in_progress = false
+				if not is_instance_valid(npc):
+					return
+				if success and text.strip_edges() != "":
+					_process_reaction_result(text.strip_edges(), observation)
+				elif OS.is_debug_build():
+					print("[Reaction] %s: Evaluation failed, continuing current plan" % npc.npc_name),
+			GeminiClient.MODEL_LITE
+		)
+	else:
+		_reaction_in_progress = false
 
 
 func _process_reaction_result(text: String, observation: String) -> void:
@@ -651,3 +802,77 @@ func wants_to_visit(building: String, _hour: int) -> bool:
 		if randf() < 0.10:
 			return true
 	return false
+
+
+# --- API request helpers ---
+
+func _build_npc_state() -> Dictionary:
+	return {
+		"npc_name": npc.npc_name,
+		"job": npc.job,
+		"age": npc.age,
+		"personality": npc.personality,
+		"speech_style": npc.speech_style,
+		"home_building": npc.home_building,
+		"workplace_building": npc.workplace_building,
+		"current_destination": npc._current_destination,
+		"current_activity": npc.current_activity,
+		"needs": {
+			"hunger": npc.needs.hunger,
+			"energy": npc.needs.energy,
+			"social": npc.needs.social,
+		},
+		"game_time": GameClock.total_minutes,
+		"game_hour": GameClock.hour,
+		"game_minute": GameClock.minute,
+		"game_day": npc._get_current_day(),
+		"game_season": "Spring",
+	}
+
+
+func _build_game_time() -> Dictionary:
+	return {
+		"total_minutes": GameClock.total_minutes,
+		"hour": GameClock.hour,
+		"minute": GameClock.minute,
+		"day": npc._get_current_day(),
+		"season": "Spring",
+	}
+
+
+func _get_recent_reflections() -> Array:
+	var result: Array = []
+	var reflections: Array[Dictionary] = npc.memory.get_by_type("reflection")
+	reflections.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
+		return a.get("game_time", 0) > b.get("game_time", 0)
+	)
+	for ref: Dictionary in reflections.slice(0, mini(3, reflections.size())):
+		result.append(ref.get("description", ""))
+	return result
+
+
+func _get_relationship_labels() -> Dictionary:
+	var result: Dictionary = {}
+	var all_rels: Dictionary = Relationships.get_all_for(npc.npc_name)
+	for target: String in all_rels:
+		result[target] = Relationships.get_opinion_label(npc.npc_name, target)
+	return result
+
+
+func _get_recent_gossip() -> Array:
+	var result: Array = []
+	var gossip_mems: Array[Dictionary] = npc.memory.get_by_type("gossip")
+	gossip_mems.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
+		return a.get("game_time", 0) > b.get("game_time", 0)
+	)
+	for g: Dictionary in gossip_mems.slice(0, mini(3, gossip_mems.size())):
+		result.append(g.get("description", ""))
+	return result
+
+
+func _get_recent_events() -> Array:
+	var result: Array = []
+	var recent: Array[Dictionary] = npc.memory.get_recent(5)
+	for mem: Dictionary in recent:
+		result.append(mem.get("description", ""))
+	return result
