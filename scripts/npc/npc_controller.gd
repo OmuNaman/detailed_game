@@ -43,8 +43,6 @@ var _town_map: Node2D = null
 # Conversation lock — prevents movement and schedule changes while talking
 var _in_conversation: bool = false
 var _conversation_partner_name: String = ""
-var _conversation_lock_time: int = 0
-
 var in_conversation: bool:
 	get: return _in_conversation
 
@@ -228,7 +226,6 @@ func lock_for_conversation(partner_name: String) -> void:
 	## Freeze this NPC for a conversation. Stops movement, schedule, and destination updates.
 	_in_conversation = true
 	_conversation_partner_name = partner_name
-	_conversation_lock_time = GameClock.total_minutes
 	if _is_moving:
 		_is_moving = false
 		_path = PackedVector2Array()
@@ -242,7 +239,6 @@ func unlock_conversation() -> void:
 	var was_locked: bool = _in_conversation
 	_in_conversation = false
 	_conversation_partner_name = ""
-	_conversation_lock_time = 0
 	if was_locked:
 		_update_destination(GameClock.hour)
 		if not _is_moving:
@@ -379,12 +375,6 @@ func _on_time_tick(_game_minute: int) -> void:
 	# Try NPC-to-NPC conversation every 15 game minutes when not moving
 	if GameClock.total_minutes % 15 == 0 and not _is_moving and not _in_conversation:
 		conversation.try_npc_conversation()
-
-	# Safety: unlock if conversation locked for too long (15+ game minutes)
-	if _in_conversation and _conversation_lock_time > 0:
-		if GameClock.total_minutes - _conversation_lock_time > 15:
-			push_warning("[Conv Lock] %s: Safety timeout after 15 min" % npc_name)
-			unlock_conversation()
 
 	# Check conversation approach completion
 	if conversation._approaching_target != null and not _is_moving:
