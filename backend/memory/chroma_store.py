@@ -30,7 +30,13 @@ logger = logging.getLogger(__name__)
 
 _chroma_client: chromadb.ClientAPI | None = None
 _project_root = Path(__file__).resolve().parent.parent.parent
-_embed_semaphore = asyncio.Semaphore(3)  # Max 3 concurrent embedding API calls
+
+# Embedding batch queue — collects texts and flushes in one API call
+_embed_lock = asyncio.Lock()
+_embed_queue: list[tuple[str, asyncio.Future]] = []  # (text, future)
+_embed_flush_task: asyncio.Task | None = None
+_EMBED_BATCH_DELAY = 0.3  # seconds to wait before flushing batch
+_EMBED_MAX_BATCH = 20  # max texts per batch call
 
 
 def get_chroma_client() -> chromadb.ClientAPI:
@@ -54,6 +60,46 @@ def get_collection(npc_name: str) -> chromadb.Collection:
     )
 
 
+async def _queue_embed(text: str) -> list[float]:
+    """Queue text for batch embedding. Returns embedding when batch flushes."""
+    global _embed_flush_task
+    loop = asyncio.get_event_loop()
+    future: asyncio.Future[list[float]] = loop.create_future()
+
+    async with _embed_lock:
+        _embed_queue.append((text, future))
+        # Schedule flush if not already scheduled
+        if _embed_flush_task is None or _embed_flush_task.done():
+            _embed_flush_task = asyncio.create_task(_flush_embed_queue())
+
+    return await future
+
+
+async def _flush_embed_queue() -> None:
+    """Wait briefly for more items, then batch-embed everything queued."""
+    await asyncio.sleep(_EMBED_BATCH_DELAY)
+
+    async with _embed_lock:
+        if not _embed_queue:
+            return
+        batch = _embed_queue[:_EMBED_MAX_BATCH]
+        del _embed_queue[:_EMBED_MAX_BATCH]
+
+    texts = [t for t, _ in batch]
+    futures = [f for _, f in batch]
+
+    embeddings = await llm_client.embed_batch(texts)
+
+    for future, embedding in zip(futures, embeddings):
+        if not future.done():
+            future.set_result(embedding)
+
+    # If there are remaining items, flush again
+    async with _embed_lock:
+        if _embed_queue:
+            asyncio.create_task(_flush_embed_queue())
+
+
 async def add_memory(
     npc_name: str,
     memory: dict,
@@ -73,11 +119,10 @@ async def add_memory(
     mem_id = memory.get("id", f"mem_{collection.count():04d}")
     text = memory.get("text", memory.get("description", ""))
 
-    # Generate embedding with rate limiting
+    # Generate embedding via batch queue (collects multiple requests into one API call)
     embedding: list[float] = []
     if embed and text:
-        async with _embed_semaphore:
-            embedding = await llm_client.embed_text(text)
+        embedding = await _queue_embed(text)
 
     # Prepare metadata (ChromaDB only stores flat string/int/float/bool)
     metadata = _memory_to_metadata(memory)
@@ -202,9 +247,8 @@ async def retrieve_memories(
     elif len(conditions) > 1:
         where_filter = {"$and": conditions}
 
-    # Embed query with rate limiting
-    async with _embed_semaphore:
-        query_embedding = await llm_client.embed_text(query_text)
+    # Embed query
+    query_embedding = await llm_client.embed_text(query_text)
 
     n_candidates = min(50, collection.count())
 
