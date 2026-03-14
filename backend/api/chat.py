@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 
 from fastapi import APIRouter
+from pydantic import BaseModel
 
 from backend.llm import client as llm_client
 from backend.llm.prompts import (
@@ -375,17 +376,25 @@ async def analyze_npc_impact(req: NPCImpactRequest) -> NPCImpactResponse:
     )
 
 
+class NPCSummaryRequest(BaseModel):
+    """Request body for NPC summary update."""
+
+    npc_name: str
+    other_name: str
+    my_line: str
+    their_line: str
+
+
 @router.post("/npc-summary", response_model=ChatResponse)
-async def update_npc_summary(
-    npc_name: str,
-    other_name: str,
-    my_line: str,
-    their_line: str,
-) -> ChatResponse:
+async def update_npc_summary(req: NPCSummaryRequest) -> ChatResponse:
     """Update NPC's impression of another NPC after conversation.
 
     Port of npc_conversation.gd _update_npc_summary_async().
     """
+    npc_name = req.npc_name
+    other_name = req.other_name
+    my_line = req.my_line
+    their_line = req.their_line
     core = await chroma_store.get_core_memory(npc_name)
     old_summary = core.get("npc_summaries", {}).get(other_name, "No prior impression")
 

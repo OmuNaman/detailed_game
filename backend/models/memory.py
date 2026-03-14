@@ -61,15 +61,14 @@ class EpisodicMemory(BaseModel):
 class MemoryAddRequest(BaseModel):
     """Request to add a new memory for an NPC."""
 
-    npc_name: str
     text: str
     type: str
     actor: str = ""
     participants: list[str] = Field(default_factory=list)
     observer_location: str = ""
     observed_near: str = ""
-    importance: float = Field(ge=1.0, le=10.0)
-    valence: float = Field(ge=-1.0, le=1.0)
+    importance: float = Field(default=5.0)  # clamped server-side, no strict validation
+    valence: float = Field(default=0.0)
     game_time: int  # current GameClock.total_minutes
     game_day: int = 0
     game_hour: int = 0

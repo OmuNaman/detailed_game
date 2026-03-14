@@ -46,7 +46,7 @@ func enhanced_reflect() -> void:
 			"workplace_building": npc.workplace_building,
 			"current_destination": npc._current_destination,
 			"current_activity": npc.current_activity,
-			"needs": {"hunger": npc.needs.hunger, "energy": npc.needs.energy, "social": npc.needs.social},
+			"needs": {"hunger": npc.hunger, "energy": npc.energy, "social": npc.social},
 			"game_time": GameClock.total_minutes,
 			"game_hour": GameClock.hour,
 			"game_minute": GameClock.minute,

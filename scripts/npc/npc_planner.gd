@@ -417,9 +417,9 @@ func _build_npc_state() -> Dictionary:
 		"current_destination": npc._current_destination,
 		"current_activity": npc.current_activity,
 		"needs": {
-			"hunger": npc.needs.hunger,
-			"energy": npc.needs.energy,
-			"social": npc.needs.social,
+			"hunger": npc.hunger,
+			"energy": npc.energy,
+			"social": npc.social,
 		},
 		"game_time": GameClock.total_minutes,
 		"game_hour": GameClock.hour,

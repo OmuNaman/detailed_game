@@ -3,7 +3,7 @@ extends Node
 ## All cognitive requests (memory, dialogue, planning, reflection) route through here.
 ## Uses a pool of HTTPRequest nodes to handle concurrent requests without blocking.
 
-const BASE_URL: String = "http://localhost:8000"
+const BASE_URL: String = "http://127.0.0.1:8000"
 const POOL_SIZE: int = 4
 const REQUEST_TIMEOUT: float = 10.0
 
@@ -24,19 +24,33 @@ func _ready() -> void:
 		_pool_busy.append(false)
 		_pool_callbacks.append(Callable())
 
-	# Check backend connectivity on startup
-	get_request("/health", func(response: Dictionary, success: bool) -> void:
-		_backend_available = success
-		if success:
-			print("[ApiClient] Backend connected at %s" % BASE_URL)
-		else:
-			push_warning("ApiClient: Backend not available at %s — running in offline mode" % BASE_URL)
-	)
+	# Check backend connectivity on startup (with retries)
+	_check_health_with_retry(3)
 
 
 func is_available() -> bool:
 	## Returns whether the backend responded to the last health check.
 	return _backend_available
+
+
+func _check_health_with_retry(retries_left: int) -> void:
+	get_request("/health", func(response: Dictionary, success: bool) -> void:
+		_backend_available = success
+		if success:
+			print("[ApiClient] Backend connected at %s" % BASE_URL)
+			# If this was a retry, refresh memory caches for all NPCs
+			if retries_left < 3:
+				for npc: Node in get_tree().get_nodes_in_group("npcs"):
+					if "memory" in npc:
+						npc.memory.refresh_cache()
+		elif retries_left > 0:
+			# Retry after 2 seconds
+			get_tree().create_timer(2.0).timeout.connect(func() -> void:
+				_check_health_with_retry(retries_left - 1)
+			)
+		else:
+			push_warning("ApiClient: Backend not available at %s — running in offline mode" % BASE_URL)
+	)
 
 
 func post(endpoint: String, body: Dictionary, callback: Callable) -> void:

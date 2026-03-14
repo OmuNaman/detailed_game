@@ -200,16 +200,24 @@ async def retrieve_memories(
 
     n_candidates = min(50, collection.count())
 
+    results = None
+
     if query_embedding:
         # Vector search
-        results = collection.query(
-            query_embeddings=[query_embedding],
-            n_results=n_candidates,
-            where=where_filter,
-            include=["documents", "metadatas", "distances"],
-        )
-    else:
-        # Fallback: keyword search (no embedding available)
+        try:
+            results = collection.query(
+                query_embeddings=[query_embedding],
+                n_results=n_candidates,
+                where=where_filter,
+                include=["documents", "metadatas", "distances"],
+            )
+        except Exception as e:
+            # ChromaDB HNSW error on collections with no embeddings on disk yet
+            logger.warning("ChromaDB query failed for %s: %s — falling back to keyword search", npc_name, e)
+            results = None
+
+    if results is None:
+        # Fallback: keyword search (no embedding available or vector search failed)
         keywords = extract_keywords(query_text)
         results = collection.get(
             where=where_filter,
