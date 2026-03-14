@@ -112,6 +112,9 @@ func _ready() -> void:
 	if world_knowledge:
 		world_knowledge.init_known_world()
 
+	# Populate memory cache from backend
+	memory.refresh_cache()
+
 	# Initial destination based on current hour
 	_update_destination(GameClock.hour)
 
@@ -573,6 +576,6 @@ func _add_memory_with_embedding(description: String, type: String, actor: String
 	if reflection:
 		reflection.on_memory_added(importance, type)
 
-	# Safety valve: trigger maintenance if episodic memories grow too large
-	if memory.episodic_memories.size() > 500 and reflection:
+	# Safety valve: trigger maintenance if memories grow too large
+	if memory.get_memory_count() > 500 and reflection:
 		reflection.run_midnight_maintenance()

@@ -78,55 +78,17 @@ func _spawn_npcs(town_map: Node2D) -> void:
 				Relationships.modify(from_name, target_name,
 					r.get("trust", 0), r.get("affection", 0), r.get("respect", 0))
 
-	# Load saved memories after all NPCs are in the scene tree
+	# Load/sync memories after all NPCs are in the scene tree
 	_load_all_memories()
 
 
 func _save_all_memories() -> void:
+	## Save NPC state. Backend owns memory data (ChromaDB); we just save profile snapshots.
 	for npc: CharacterBody2D in get_tree().get_nodes_in_group("npcs"):
 		var folder: String = "res://data/npc_data/%s/" % npc.npc_name
 		DirAccess.make_dir_recursive_absolute(folder)
 
-		# Save all three tiers via MemorySystem
-		npc.memory.save_all()
-
-		# Also save old-format memories.json for backward compat
-		var mem_data: Dictionary = npc.memory.serialize()
-		var mem_file := FileAccess.open(folder + "memories.json", FileAccess.WRITE)
-		if mem_file:
-			mem_file.store_string(JSON.stringify(mem_data, "\t"))
-
-		# Human-readable conversation log
-		var conversations: Array[Dictionary] = npc.memory.get_by_type("dialogue")
-		var conv_file := FileAccess.open(folder + "conversations.json", FileAccess.WRITE)
-		if conv_file:
-			var conv_list: Array[Dictionary] = []
-			for conv: Dictionary in conversations:
-				conv_list.append({
-					"time": conv.get("game_time", conv.get("timestamp", 0)),
-					"with": conv.get("actor", "unknown"),
-					"description": conv.get("text", conv.get("description", "")),
-					"location": conv.get("observer_location", conv.get("location", "")),
-				})
-			conv_file.store_string(JSON.stringify(conv_list, "\t"))
-
-		# Human-readable gossip log
-		var gossip: Array[Dictionary] = npc.memory.get_by_type("gossip")
-		if not gossip.is_empty():
-			var gossip_file := FileAccess.open(folder + "gossip_heard.json", FileAccess.WRITE)
-			if gossip_file:
-				var gossip_list: Array[Dictionary] = []
-				for g: Dictionary in gossip:
-					gossip_list.append({
-						"time": g.get("game_time", g.get("timestamp", 0)),
-						"from": g.get("gossip_source", "unknown"),
-						"about": g.get("actor", "unknown"),
-						"description": g.get("text", g.get("description", "")),
-						"hops": g.get("gossip_hops", 0),
-					})
-				gossip_file.store_string(JSON.stringify(gossip_list, "\t"))
-
-		# Profile snapshot
+		# Profile snapshot (always saved locally for debugging)
 		var profile_file := FileAccess.open(folder + "profile.json", FileAccess.WRITE)
 		if profile_file:
 			var profile: Dictionary = {
@@ -139,62 +101,22 @@ func _save_all_memories() -> void:
 				"energy": snapped(npc.energy, 0.1),
 				"social": snapped(npc.social, 0.1),
 				"mood": snapped(npc.get_mood(), 0.1),
-				"total_memories": npc.memory.episodic_memories.size(),
-				"total_conversations": npc.memory.get_by_type("dialogue").size(),
-				"total_observations": npc.memory.get_by_type("observation").size(),
+				"total_memories": npc.memory.get_memory_count(),
 				"core_memory_state": npc.memory.core_memory.get("emotional_state", ""),
 			}
 			profile_file.store_string(JSON.stringify(profile, "\t"))
 
 	Relationships.save_relationships()
-	print("[SaveManager] Saved %d NPC data folders to res://data/npc_data/" % get_tree().get_nodes_in_group("npcs").size())
+	print("[SaveManager] Saved %d NPC profiles to res://data/npc_data/" % get_tree().get_nodes_in_group("npcs").size())
 
 
 func _load_all_memories() -> void:
-	var loaded_any: bool = false
+	## Populate memory cache from backend. Backend (ChromaDB) is the source of truth.
 	for npc: CharacterBody2D in get_tree().get_nodes_in_group("npcs"):
-		# Try new three-tier format first (episodic_memories.json + core_memory.json)
-		var ep_path: String = "res://data/npc_data/%s/episodic_memories.json" % npc.npc_name
-		if FileAccess.file_exists(ep_path):
-			npc.memory.load_or_init(npc.npc_name, npc.personality, PlayerProfile.player_name)
-			print("[SaveManager] Loaded %d episodic memories for %s" % [
-				npc.memory.episodic_memories.size(), npc.npc_name])
-			loaded_any = true
-			continue
-
-		# Fall back to old memories.json format
-		var mem_path: String = "res://data/npc_data/%s/memories.json" % npc.npc_name
-		var file := FileAccess.open(mem_path, FileAccess.READ)
-		if file:
-			var json := JSON.new()
-			if json.parse(file.get_as_text()) == OK:
-				npc.memory.deserialize(json.data)
-				print("[SaveManager] Loaded + migrated %d memories for %s (old format)" % [
-					npc.memory.episodic_memories.size(), npc.npc_name])
-				loaded_any = true
-				continue
-
-	if loaded_any:
-		return
-
-	# Backward compatibility: try old flat format (res://data/npc_memories.json)
-	var old_file := FileAccess.open("res://data/npc_memories.json", FileAccess.READ)
-	if not old_file:
-		print("[SaveManager] No saved memories found — fresh start")
-		return
-
-	print("[SaveManager] Migrating from old npc_memories.json format...")
-	var json := JSON.new()
-	if json.parse(old_file.get_as_text()) != OK:
-		push_warning("[SaveManager] Failed to parse npc_memories.json")
-		return
-
-	var old_data: Dictionary = json.data
-	for npc: CharacterBody2D in get_tree().get_nodes_in_group("npcs"):
-		if old_data.has(npc.npc_name):
-			npc.memory.deserialize(old_data[npc.npc_name])
-			print("[SaveManager] Migrated %d memories for %s" % [
-				npc.memory.episodic_memories.size(), npc.npc_name])
+		# refresh_cache() is already called in npc_controller._ready()
+		# Just log the status here
+		if OS.is_debug_build():
+			print("[SaveManager] %s: memory cache will sync from backend" % npc.npc_name)
 
 
 func _on_hour_changed(hour: int) -> void:

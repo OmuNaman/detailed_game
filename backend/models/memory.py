@@ -127,6 +127,17 @@ class CoreMemoryUpdateRequest(BaseModel):
     key_facts: list[str] | None = None
 
 
+class MemorySnapshotResponse(BaseModel):
+    """Full memory snapshot for GDScript cache population — single round-trip."""
+
+    core_memory: CoreMemory
+    recent_memories: list[EpisodicMemory] = Field(default_factory=list)
+    memory_count: int = 0
+    type_counts: dict[str, int] = Field(default_factory=dict)
+    player_memories: list[EpisodicMemory] = Field(default_factory=list)
+    gossip_candidates: list[EpisodicMemory] = Field(default_factory=list)
+
+
 class MaintenanceRequest(BaseModel):
     """Request to run memory maintenance (forgetting + compression)."""
 

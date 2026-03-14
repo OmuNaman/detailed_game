@@ -54,6 +54,9 @@ func generate_daily_plan() -> void:
 
 
 func _generate_plan_via_api() -> void:
+	# Refresh memory cache for fresh context
+	npc.memory.refresh_cache()
+
 	var body: Dictionary = {
 		"npc_name": npc.npc_name,
 		"npc_state": _build_npc_state(),

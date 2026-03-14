@@ -34,6 +34,7 @@ from backend.models.memory import (
     MemoryContextResponse,
     MemoryRetrieveRequest,
     MemoryRetrieveResponse,
+    MemorySnapshotResponse,
     EpisodicMemory,
 )
 
@@ -118,6 +119,14 @@ async def retrieve_memories(npc_name: str, req: MemoryRetrieveRequest) -> Memory
         type_filter=req.type_filter,
         time_range_hours=req.time_range_hours,
     )
+    # Post-filter by entity if requested
+    if req.entity_filter:
+        memories = [
+            m for m in memories
+            if req.entity_filter in m.get("participants", [])
+            or req.entity_filter in m.get("entities", [])
+            or m.get("actor", "") == req.entity_filter
+        ]
     return MemoryRetrieveResponse(
         memories=[
             EpisodicMemory(**{k: v for k, v in m.items()
@@ -171,6 +180,31 @@ async def update_core_memory(npc_name: str, req: CoreMemoryUpdateRequest) -> Cor
 
     await chroma_store.save_core_memory(npc_name, core)
     return CoreMemory(**core)
+
+
+@router.get("/{npc_name}/snapshot", response_model=MemorySnapshotResponse)
+async def get_snapshot(npc_name: str, player_name: str = "Player", game_time: int = 0) -> MemorySnapshotResponse:
+    """Return a full memory snapshot for GDScript cache population.
+
+    Single round-trip replaces ~10 separate queries from the client.
+    """
+    core = await chroma_store.get_core_memory(npc_name)
+    recent = chroma_store.get_recent_memories(npc_name, count=10)
+    counts = chroma_store.get_memory_counts(npc_name)
+    player_mems = chroma_store.get_memories_about_entity(npc_name, player_name, count=5)
+    gossip = chroma_store.get_gossip_candidates(npc_name, game_time) if game_time > 0 else []
+
+    def _to_episodic(m: dict) -> EpisodicMemory:
+        return EpisodicMemory(**{k: v for k, v in m.items() if k in EpisodicMemory.model_fields})
+
+    return MemorySnapshotResponse(
+        core_memory=CoreMemory(**core),
+        recent_memories=[_to_episodic(m) for m in recent],
+        memory_count=counts["total"],
+        type_counts=counts["by_type"],
+        player_memories=[_to_episodic(m) for m in player_mems],
+        gossip_candidates=[_to_episodic(m) for m in gossip],
+    )
 
 
 @router.post("/{npc_name}/maintenance", response_model=MaintenanceResponse)

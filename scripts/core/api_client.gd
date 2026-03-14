@@ -50,6 +50,17 @@ func post(endpoint: String, body: Dictionary, callback: Callable) -> void:
 	_try_process_queue()
 
 
+func put(endpoint: String, body: Dictionary, callback: Callable) -> void:
+	## Queue a PUT request. Callback receives (response: Dictionary, success: bool).
+	_request_queue.append({
+		"url": BASE_URL + endpoint,
+		"method": HTTPClient.METHOD_PUT,
+		"body": JSON.stringify(body),
+		"callback": callback,
+	})
+	_try_process_queue()
+
+
 func get_request(endpoint: String, callback: Callable) -> void:
 	## Queue a GET request. Callback receives (response: Dictionary, success: bool).
 	_request_queue.append({
@@ -77,7 +88,7 @@ func _try_process_queue() -> void:
 		if req["method"] == HTTPClient.METHOD_GET:
 			err = _http_pool[slot].request(req["url"], headers, HTTPClient.METHOD_GET)
 		else:
-			err = _http_pool[slot].request(req["url"], headers, HTTPClient.METHOD_POST, req["body"])
+			err = _http_pool[slot].request(req["url"], headers, req["method"], req["body"])
 
 		if err != OK:
 			push_warning("ApiClient: HTTP request failed to start: %s" % error_string(err))

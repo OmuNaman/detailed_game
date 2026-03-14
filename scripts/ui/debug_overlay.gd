@@ -42,8 +42,8 @@ func _refresh() -> void:
 		var energy_bar: String = _make_bar(npc.energy, "4080E8")
 		var social_bar: String = _make_bar(npc.social, "40C840")
 		var mood_val: float = npc.get_mood()
-		var mem_count: int = npc.memory.memories.size()
-		var conv_count: int = npc.memory.get_by_type("dialogue").size()
+		var mem_count: int = npc.memory.get_memory_count()
+		var conv_count: int = int(npc.memory._type_counts.get("dialogue", 0))
 
 		var activity: String = npc.current_activity if npc.current_activity != "" else "idle"
 		if activity.length() > 30:

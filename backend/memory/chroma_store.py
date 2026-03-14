@@ -405,6 +405,63 @@ def get_memories_by_type(npc_name: str, mem_type: str) -> list[dict]:
     ]
 
 
+def get_memories_about_entity(npc_name: str, entity_name: str, count: int = 5) -> list[dict]:
+    """Get memories where entity_name is the actor or a participant."""
+    all_mems = get_all_memories(npc_name)
+    entity_mems = [
+        m for m in all_mems
+        if not m.get("superseded", False) and (
+            m.get("actor", "") == entity_name
+            or entity_name in m.get("participants", [])
+            or entity_name in m.get("entities", [])
+        )
+    ]
+    entity_mems.sort(key=lambda m: m.get("timestamp", 0), reverse=True)
+    return entity_mems[:count]
+
+
+def get_memory_counts(npc_name: str) -> dict[str, Any]:
+    """Return total count and per-type breakdown."""
+    collection = get_collection(npc_name)
+    total = collection.count()
+    if total == 0:
+        return {"total": 0, "by_type": {}}
+
+    all_mems = get_all_memories(npc_name)
+    by_type: dict[str, int] = {}
+    for m in all_mems:
+        t = m.get("type", "observation")
+        by_type[t] = by_type.get(t, 0) + 1
+    return {"total": total, "by_type": by_type}
+
+
+def get_gossip_candidates(
+    npc_name: str,
+    current_game_time: int,
+    max_age_hours: int = 48,
+    min_importance: float = 3.0,
+) -> list[dict]:
+    """Get recent important memories eligible for gossip sharing."""
+    all_mems = get_all_memories(npc_name)
+    candidates = []
+    for m in all_mems:
+        if m.get("superseded", False):
+            continue
+        if m.get("importance", 0) < min_importance:
+            continue
+        hours_ago = (current_game_time - m.get("game_time", 0)) / 60.0
+        if hours_ago > max_age_hours:
+            continue
+        mem_type = m.get("type", "")
+        if mem_type in ("observation", "dialogue", "environment", "reflection", "gossip"):
+            candidates.append(m)
+    candidates.sort(
+        key=lambda x: x.get("importance", 0) * pow(0.98, (current_game_time - x.get("game_time", 0)) / 60.0),
+        reverse=True,
+    )
+    return candidates[:30]
+
+
 def texts_are_similar(a: str, b: str, threshold: float = 0.85) -> bool:
     """Check if two texts are similar by word overlap. Matches memory_system.gd."""
     set_a = set(a.lower().split())

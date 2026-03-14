@@ -285,6 +285,9 @@ func _begin_conversation(other_npc: CharacterBody2D) -> void:
 	## Lock both NPCs, face each other, and start the actual dialogue exchange.
 	var other_name: String = other_npc.npc_name
 
+	# Refresh memory cache for fresh topic picking
+	npc.memory.refresh_cache()
+
 	# Lock both NPCs
 	npc.lock_for_conversation(other_name)
 	other_npc.lock_for_conversation(npc.npc_name)

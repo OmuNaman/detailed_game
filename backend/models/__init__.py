@@ -12,6 +12,7 @@ from backend.models.memory import (
     MemoryContextResponse,
     MemoryRetrieveRequest,
     MemoryRetrieveResponse,
+    MemorySnapshotResponse,
 )
 from backend.models.npc import (
     GameTimeInfo,
@@ -34,6 +35,7 @@ __all__ = [
     "MemoryContextResponse",
     "MemoryRetrieveRequest",
     "MemoryRetrieveResponse",
+    "MemorySnapshotResponse",
     "NPCNeeds",
     "NPCState",
     "ObserveRequest",

@@ -29,56 +29,28 @@ func pick_gossip_for(other_npc: CharacterBody2D) -> Dictionary:
 	if randf() > GOSSIP_CHANCE:
 		return {}
 
-	# Gather candidate memories: recent, important, about THIRD PARTIES
-	var candidates: Array[Dictionary] = []
-	var current_time: int = GameClock.total_minutes
+	# Use pre-filtered gossip candidates from backend cache
+	var all_candidates: Array[Dictionary] = npc.memory.get_gossip_candidates()
+	if all_candidates.is_empty():
+		return {}
 
-	for mem: Dictionary in npc.memory.memories:
-		# Must be recent enough
-		var hours_ago: float = (current_time - mem.get("game_time", 0)) / 60.0
-		if hours_ago > GOSSIP_MAX_AGE_HOURS:
-			continue
-
-		# Must be important enough
-		if mem.get("importance", 0.0) < GOSSIP_MIN_IMPORTANCE:
-			continue
-
-		# Must be about someone other than the conversation partner or self
+	# Filter for this specific conversation partner
+	for mem: Dictionary in all_candidates:
 		var actor: String = mem.get("actor", "")
 		if actor == other_npc.npc_name or actor == npc.npc_name or actor == "":
 			continue
-
-		# Don't re-share gossip that originally came from this NPC
-		var source: String = mem.get("gossip_source", "")
+		var source: String = str(mem.get("gossip_source", ""))
 		if source == other_npc.npc_name:
 			continue
-
-		# Don't share memories that the other NPC was a participant in
 		var participants: Array = mem.get("participants", [])
 		if other_npc.npc_name in participants:
 			continue
-
-		# Bug 3: Skip if already told this person
 		var shared_with: Array = mem.get("shared_with", [])
 		if other_npc.npc_name in shared_with:
 			continue
+		return mem
 
-		# Prefer certain types
-		var type: String = mem.get("type", "")
-		if type in ["observation", "dialogue", "environment", "reflection", "gossip"]:
-			candidates.append(mem)
-
-	if candidates.is_empty():
-		return {}
-
-	# Sort by importance * recency — share the juiciest recent thing
-	candidates.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
-		var score_a: float = a.get("importance", 0.0) * pow(0.98, (current_time - a.get("game_time", 0)) / 60.0)
-		var score_b: float = b.get("importance", 0.0) * pow(0.98, (current_time - b.get("game_time", 0)) / 60.0)
-		return score_a > score_b
-	)
-
-	return candidates[0]
+	return {}
 
 
 func share_gossip_with(receiver_npc: CharacterBody2D, original_memory: Dictionary) -> void:

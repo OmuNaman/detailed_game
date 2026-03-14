@@ -1,5 +1,6 @@
 extends Node
-## Stanford two-step reflection system and midnight memory maintenance (compression, forgetting).
+## Stanford two-step reflection system and midnight memory maintenance.
+## All heavy lifting (question generation, insight creation, compression) is server-side.
 
 var npc: CharacterBody2D
 
@@ -23,20 +24,16 @@ func on_memory_added(importance: float, type: String) -> void:
 
 
 func enhanced_reflect() -> void:
-	## Stanford two-step reflection: generate questions from recent experiences,
-	## then generate insights per question using relevant memories.
+	## Stanford two-step reflection via backend API.
 	if _reflection_in_progress:
 		return
 
 	_reflection_in_progress = true
 
-	if ApiClient.is_available():
-		_reflect_via_api()
-	else:
+	if not ApiClient.is_available():
 		_reflection_in_progress = false
+		return
 
-
-func _reflect_via_api() -> void:
 	var body: Dictionary = {
 		"npc_name": npc.npc_name,
 		"npc_state": {
@@ -69,10 +66,11 @@ func _reflect_via_api() -> void:
 		if success and response.get("success", false):
 			var insights: Array = response.get("insights", [])
 			if not insights.is_empty():
-				# Update emotional state locally from last insight
 				var last_insight: String = str(insights[-1]).left(150)
 				npc.memory.update_emotional_state(last_insight)
 				npc.dialogue.last_significant_event_time = GameClock.total_minutes
+				# Refresh cache to pick up new reflection memories
+				npc.memory.refresh_cache()
 				if OS.is_debug_build():
 					print("[Reflect API] %s: %d insights from %d questions" % [
 						npc.npc_name, insights.size(), response.get("questions_generated", 0)])
@@ -82,28 +80,20 @@ func _reflect_via_api() -> void:
 # --- Midnight Maintenance ---
 
 func run_midnight_maintenance() -> void:
-	## Daily memory maintenance: forgetting curves → compression → save.
-	if ApiClient.is_available():
-		var body: Dictionary = {"game_time": GameClock.total_minutes}
-		ApiClient.post("/memory/%s/maintenance" % npc.npc_name, body, func(response: Dictionary, success: bool) -> void:
-			if success:
-				if OS.is_debug_build():
-					print("[Memory API] %s: Midnight maintenance — forgotten: %d, compressed: %d" % [
-						npc.npc_name,
-						response.get("forgotten_count", 0),
-						response.get("compressed_count", 0)])
-			else:
-				_run_local_maintenance()
-		)
-	else:
-		_run_local_maintenance()
+	## Daily memory maintenance via backend (forgetting + compression).
+	if not ApiClient.is_available():
+		if OS.is_debug_build():
+			print("[Memory] %s: Skipping maintenance (no backend)" % npc.npc_name)
+		return
 
-
-func _run_local_maintenance() -> void:
-	## Local-only maintenance: forgetting curves + save. No compression (requires backend).
-	npc.memory.apply_daily_forgetting()
-	npc.memory.save_all()
-
-	if OS.is_debug_build():
-		print("[Memory] %s: Local maintenance — Episodic: %d, Archival: %d" % [
-			npc.npc_name, npc.memory.episodic_memories.size(), npc.memory.archival_summaries.size()])
+	var body: Dictionary = {"game_time": GameClock.total_minutes}
+	ApiClient.post("/memory/%s/maintenance" % npc.npc_name, body, func(response: Dictionary, success: bool) -> void:
+		if success:
+			# Refresh cache after maintenance (counts may have changed)
+			npc.memory.refresh_cache()
+			if OS.is_debug_build():
+				print("[Memory API] %s: Midnight maintenance — forgotten: %d, compressed: %d" % [
+					npc.npc_name,
+					response.get("forgotten_count", 0),
+					response.get("compressed_count", 0)])
+	)
