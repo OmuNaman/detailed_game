@@ -309,10 +309,8 @@ func _begin_conversation(other_npc: CharacterBody2D) -> void:
 	other_npc.current_activity = "talking with %s" % npc.npc_name
 	other_npc.activity._update_activity_label()
 
-	# Run conversation (API > Gemini > template)
+	# Run conversation (API > template)
 	if ApiClient.is_available():
-		_real_npc_conversation_locked(other_npc)
-	elif GeminiClient.has_api_key() and GeminiClient._request_queue.size() <= 10:
 		_real_npc_conversation_locked(other_npc)
 	else:
 		_fake_npc_conversation_locked(other_npc)
@@ -356,13 +354,11 @@ func _fake_npc_conversation_locked(other_npc: CharacterBody2D) -> void:
 
 
 func _real_npc_conversation_locked(other_npc: CharacterBody2D) -> void:
-	## Turn-by-turn Gemini-powered conversation with lock/unlock lifecycle.
+	## Turn-by-turn API-powered conversation with lock/unlock lifecycle.
 	var topic: String = _approach_topic if _approach_topic != "" else _pick_conversation_topic(other_npc)
 	_approach_topic = ""
 
 	var max_turns: int = NPC_CONV_MAX_TURNS
-	if GeminiClient._request_queue.size() > 5:
-		max_turns = 2  # Throttle when busy
 
 	# Start the recursive turn chain
 	_run_conversation_turn(npc, other_npc, [], 0, max_turns, topic,
@@ -409,10 +405,8 @@ func _real_npc_conversation_locked(other_npc: CharacterBody2D) -> void:
 			if first_my != "" and first_their != "":
 				_analyze_npc_conversation_impact(other_npc, first_my, first_their)
 
-			print("[NPC Chat] %s↔%s: %d turns at %s (queue: %d)" % [
-				npc.npc_name, other_name, history.size(), npc._current_destination,
-				GeminiClient._request_queue.size()
-			])
+			print("[NPC Chat] %s↔%s: %d turns at %s" % [
+				npc.npc_name, other_name, history.size(), npc._current_destination])
 
 			# Gossip phase (20% chance)
 			var gossip_mem: Dictionary = npc.gossip.pick_gossip_for(other_npc)
@@ -437,7 +431,7 @@ func _run_conversation_turn(speaker: CharacterBody2D, listener: CharacterBody2D,
 		history: Array[Dictionary], turn: int, max_turns: int,
 		topic: String, on_done: Callable) -> void:
 	## Recursive callback chain: each turn generates one line, then swaps roles.
-	## Routes through ApiClient with GeminiClient fallback.
+	## Routes through ApiClient; falls back to template on failure.
 	if not is_instance_valid(speaker) or not is_instance_valid(listener):
 		on_done.call(history)
 		return
@@ -445,7 +439,10 @@ func _run_conversation_turn(speaker: CharacterBody2D, listener: CharacterBody2D,
 	if ApiClient.is_available():
 		_run_turn_via_api(speaker, listener, history, turn, max_turns, topic, on_done)
 	else:
-		_run_turn_via_gemini(speaker, listener, history, turn, max_turns, topic, on_done)
+		# No backend — use a template line and end after min turns
+		var line: String = speaker.conversation._get_npc_chat_fallback(topic)
+		var should_end: bool = turn + 1 >= NPC_CONV_MIN_TURNS
+		_process_turn_result(speaker, listener, history, turn, max_turns, topic, on_done, line, should_end)
 
 
 func _build_npc_state_for(character: CharacterBody2D) -> Dictionary:
@@ -514,44 +511,10 @@ func _run_turn_via_api(speaker: CharacterBody2D, listener: CharacterBody2D,
 	)
 
 
-func _run_turn_via_gemini(speaker: CharacterBody2D, listener: CharacterBody2D,
-		history: Array[Dictionary], turn: int, max_turns: int,
-		topic: String, on_done: Callable) -> void:
-	## Fallback: local GeminiClient for NPC-NPC conversation turn.
-	var system_prompt: String = speaker.conversation._build_npc_chat_system_prompt()
-	var history_text: String = ""
-	for entry: Dictionary in history:
-		history_text += "%s: \"%s\"\n" % [entry["speaker"], entry["text"]]
-	var context: String = speaker.conversation._build_npc_chat_context_for_turn(listener, topic, history_text, turn)
-
-	GeminiClient.generate(system_prompt, context, func(line: String, success: bool) -> void:
-		if not is_instance_valid(speaker) or not is_instance_valid(listener):
-			on_done.call(history)
-			return
-		if not success or line.strip_edges() == "":
-			line = speaker.conversation._get_npc_chat_fallback(topic)
-		line = line.strip_edges().replace("\"", "").left(120)
-
-		# Local end detection
-		var should_end: bool = false
-		if turn + 1 >= max_turns:
-			should_end = true
-		elif turn + 1 >= NPC_CONV_MIN_TURNS:
-			if randf() < 0.3:
-				should_end = true
-		var line_lower: String = line.to_lower()
-		if line_lower.contains("goodbye") or line_lower.contains("see you") or line_lower.contains("take care") or line_lower.contains("farewell"):
-			if turn + 1 >= NPC_CONV_MIN_TURNS:
-				should_end = true
-
-		_process_turn_result(speaker, listener, history, turn, max_turns, topic, on_done, line, should_end)
-	)
-
-
 func _process_turn_result(speaker: CharacterBody2D, listener: CharacterBody2D,
 		history: Array[Dictionary], turn: int, max_turns: int,
 		topic: String, on_done: Callable, line: String, should_end: bool) -> void:
-	## Common post-processing for a completed turn (API or Gemini).
+	## Common post-processing for a completed turn.
 	history.append({"speaker": speaker.npc_name, "text": line})
 	speaker.conversation._show_speech_bubble(line)
 	print("[NPC Chat T%d] %s: \"%s\"" % [turn, speaker.npc_name, line])
@@ -567,61 +530,7 @@ func _process_turn_result(speaker: CharacterBody2D, listener: CharacterBody2D,
 	)
 
 
-# --- Context builders ---
-
-func _build_npc_chat_context_for_turn(other_npc: CharacterBody2D, topic: String,
-		history_text: String, turn: int) -> String:
-	## Per-turn context with conversation history and targeted retrieval.
-	var context: String = ""
-
-	# Base context from the standard builder (without the reply line)
-	var hour: int = GameClock.hour
-	var period: String = "morning" if hour < 12 else ("afternoon" if hour < 17 else ("evening" if hour < 21 else "night"))
-	context += "It's %s at the %s. " % [period, npc._current_destination]
-
-	if npc.current_activity != "" and not npc.current_activity.begins_with("talking with"):
-		context += "You were %s before this conversation. " % npc.current_activity
-	if other_npc.current_activity != "" and not other_npc.current_activity.begins_with("talking with"):
-		context += "%s was %s. " % [other_npc.npc_name, other_npc.current_activity]
-
-	# Relationship
-	var trust_l: String = Relationships.get_trust_label(npc.npc_name, other_npc.npc_name)
-	var affec_l: String = Relationships.get_affection_label(npc.npc_name, other_npc.npc_name)
-	var respe_l: String = Relationships.get_respect_label(npc.npc_name, other_npc.npc_name)
-	context += "You %s %s, %s them, and %s them. " % [trust_l, other_npc.npc_name, affec_l, respe_l]
-
-	# NPC summary for conversation partner from core memory
-	var npc_summaries: Dictionary = npc.memory.core_memory.get("npc_summaries", {})
-	var partner_summary: String = npc_summaries.get(other_npc.npc_name, "")
-	if partner_summary != "":
-		context += "What you know about %s: %s " % [other_npc.npc_name, partner_summary]
-
-	# Per-turn retrieval: use last line said as query (or topic for first turn)
-	var retrieval_query: String = topic
-	if not history_text.is_empty():
-		var last_line: String = history_text.strip_edges().split("\n")[-1]
-		if last_line.length() > 5:
-			retrieval_query = last_line
-
-	var retrieved: Array[Dictionary] = npc.memory.retrieve_by_query_text(
-		retrieval_query, GameClock.total_minutes, 3)
-	if not retrieved.is_empty():
-		context += "Relevant memories: "
-		for mem: Dictionary in retrieved:
-			context += "%s %s. " % [mem.get("text", mem.get("description", "")), npc.dialogue.format_memory_age(mem)]
-
-	# Conversation history so far
-	if history_text != "":
-		context += "\n\nConversation so far:\n" + history_text
-
-	# Instruction
-	if turn == 0:
-		context += "\nYou're chatting with %s about %s. Say ONE line (max 1-2 sentences)." % [other_npc.npc_name, topic]
-	else:
-		context += "\nContinue the conversation with %s. Say ONE line (max 1-2 sentences). If the conversation has reached a natural end, you can say goodbye." % other_npc.npc_name
-
-	return context
-
+# --- Topic selection ---
 
 func _pick_conversation_topic(other_npc: CharacterBody2D) -> String:
 	## Pick a topic based on context.
@@ -671,84 +580,8 @@ func _pick_conversation_topic(other_npc: CharacterBody2D) -> String:
 	return topics[randi() % topics.size()]
 
 
-func _build_npc_chat_system_prompt() -> String:
-	## System prompt for NPC-to-NPC conversation (shorter than player dialogue).
-	return "You are %s, age %d, %s in DeepTown. %s\nSpeech style: %s\n\nRules:\n- Say ONE sentence only, in character, first person\n- This is casual chat with a fellow townsperson, not a formal speech\n- Be natural — greetings, complaints, observations, jokes, gossip\n- Reference your current mood or needs if relevant\n- NEVER break character or mention being an AI" % [
-		npc.npc_name, npc.age, npc.job, npc.personality, npc.speech_style
-	]
-
-
-func _build_npc_chat_context(other_npc: CharacterBody2D, topic: String, their_line: String) -> String:
-	## Build the user message for NPC-to-NPC conversation.
-	var hour: int = GameClock.hour
-	var period: String = "morning" if hour < 12 else ("afternoon" if hour < 17 else ("evening" if hour < 21 else "night"))
-
-	var context: String = "It's %s at the %s. " % [period, npc._current_destination]
-
-	# What you and the other NPC are doing
-	if npc.current_activity != "":
-		context += "You are currently %s. " % npc.current_activity
-	if other_npc.current_activity != "":
-		context += "%s is currently %s. " % [other_npc.npc_name, other_npc.current_activity]
-
-	# Current plan context
-	var current_plan: Dictionary = npc.planner.get_current_plan()
-	if not current_plan.is_empty():
-		context += "You're here because you planned to: %s. " % current_plan.get("reason", "visit")
-
-	# Relationship with conversation partner (per-dimension labels)
-	var trust_l: String = Relationships.get_trust_label(npc.npc_name, other_npc.npc_name)
-	var affec_l: String = Relationships.get_affection_label(npc.npc_name, other_npc.npc_name)
-	var respe_l: String = Relationships.get_respect_label(npc.npc_name, other_npc.npc_name)
-	context += "You %s %s, %s them, and %s them. " % [trust_l, other_npc.npc_name, affec_l, respe_l]
-
-	# Your current state
-	if npc.hunger < 40.0:
-		context += "You're quite hungry. "
-	if npc.energy < 30.0:
-		context += "You're exhausted. "
-	if npc.social > 80.0:
-		context += "You're in a great mood. "
-
-	# Retrieval-based memories relevant to this conversation (broadened with recent third-party names)
-	var retrieval_query: String = "talking with %s at the %s" % [other_npc.npc_name, npc._current_destination]
-	var recent_actors: Array[String] = []
-	for mem: Dictionary in npc.memory.get_recent(5):
-		var actor: String = mem.get("actor", "")
-		if actor != "" and actor != npc.npc_name and actor != other_npc.npc_name:
-			if actor not in recent_actors:
-				recent_actors.append(actor)
-	if not recent_actors.is_empty():
-		retrieval_query += " " + " ".join(recent_actors.slice(0, 2))
-	var retrieved: Array[Dictionary] = npc.memory.retrieve_by_query_text(
-		retrieval_query, GameClock.total_minutes, 5)
-	if not retrieved.is_empty():
-		context += "Relevant memories: "
-		for mem: Dictionary in retrieved:
-			context += "%s %s. " % [mem.get("text", mem.get("description", "")), npc.dialogue.format_memory_age(mem)]
-
-	# NPC summary for conversation partner (from core memory)
-	var npc_summaries: Dictionary = npc.memory.core_memory.get("npc_summaries", {})
-	if npc_summaries.has(other_npc.npc_name):
-		context += "What you know about %s: %s " % [other_npc.npc_name, npc_summaries[other_npc.npc_name]]
-
-	# The conversation setup
-	if their_line == "":
-		# I'm starting the conversation
-		context += "\nYou see %s (%s, age %d) nearby. Start a brief chat about %s. Say ONE sentence." % [
-			other_npc.npc_name, other_npc.job, other_npc.age, topic
-		]
-	else:
-		# I'm replying to them
-		context += "\n%s just said to you: \"%s\"\nReply naturally with ONE sentence." % [
-			other_npc.npc_name, their_line
-		]
-
-	return context
-
-
 func _get_npc_chat_fallback(topic: String) -> String:
-	## Fallback one-liner when Gemini fails mid-conversation.
+	## Fallback one-liner when API fails mid-conversation.
 	var fallbacks: Array[String] = [
 		"Interesting weather we're having.",
 		"Same old, same old around here.",
@@ -779,133 +612,67 @@ func _analyze_npc_conversation_impact(other_npc: CharacterBody2D, my_line: Strin
 	var other_name: String = other_npc.npc_name
 	_npc_conv_totals[other_name] = _npc_conv_totals.get(other_name, 0) + 1
 
-	if ApiClient.is_available():
-		var rel: Dictionary = Relationships.get_relationship(npc.npc_name, other_name)
-		var body: Dictionary = {
-			"speaker_name": npc.npc_name,
-			"listener_name": other_name,
-			"speaker_line": my_line,
-			"listener_line": their_line,
-			"current_relationship": rel,
-			"game_time": {
-				"total_minutes": GameClock.total_minutes,
-				"hour": GameClock.hour,
-				"minute": GameClock.minute,
-				"day": GameClock.total_minutes / 1440,
-			},
-		}
-		ApiClient.post("/chat/npc-impact", body, func(response: Dictionary, success: bool) -> void:
-			if not is_instance_valid(npc):
-				return
-			if success:
-				var a2b: Dictionary = response.get("a_to_b", {})
-				var b2a: Dictionary = response.get("b_to_a", {})
-				var a_t: int = clampi(int(a2b.get("trust_change", 0)), -3, 3)
-				var a_a: int = clampi(int(a2b.get("affection_change", 0)), -3, 3)
-				var a_r: int = clampi(int(a2b.get("respect_change", 0)), -3, 3)
-				var b_t: int = clampi(int(b2a.get("trust_change", 0)), -3, 3)
-				var b_a: int = clampi(int(b2a.get("affection_change", 0)), -3, 3)
-				var b_r: int = clampi(int(b2a.get("respect_change", 0)), -3, 3)
-				if a_t == 0 and a_a == 0 and a_r == 0: a_t = 1
-				if b_t == 0 and b_a == 0 and b_r == 0: b_t = 1
-				Relationships.modify(npc.npc_name, other_name, a_t, a_a, a_r)
-				Relationships.modify(other_name, npc.npc_name, b_t, b_a, b_r)
-				var total_mag: int = absi(a_t) + absi(a_a) + absi(a_r)
-				var conv_count: int = _npc_conv_totals.get(other_name, 0)
-				if total_mag >= 3 or conv_count % 3 == 0:
-					_update_npc_summary_async(other_name, my_line, their_line)
-				if OS.is_debug_build():
-					print("[NPC Impact API] %s→%s: T:%+d A:%+d R:%+d | %s→%s: T:%+d A:%+d R:%+d" % [
-						npc.npc_name, other_name, a_t, a_a, a_r, other_name, npc.npc_name, b_t, b_a, b_r])
-			else:
-				Relationships.modify_mutual(npc.npc_name, other_name, 1, 1, 0)
-		)
-		return
-
-	# Fallback: local GeminiClient
-	if not GeminiClient.has_api_key() or GeminiClient._request_queue.size() > 8:
+	if not ApiClient.is_available():
 		Relationships.modify_mutual(npc.npc_name, other_name, 1, 1, 0)
 		return
 
 	var rel: Dictionary = Relationships.get_relationship(npc.npc_name, other_name)
-	var prompt: String = "Conversation between %s and %s:\n%s: \"%s\"\n%s: \"%s\"\n\nCurrent relationship: Trust:%d Affection:%d Respect:%d\n\nFor EACH person, rate how feelings change. JSON only:\n{\"a_to_b\": {\"trust\": 0, \"affection\": 0, \"respect\": 0}, \"b_to_a\": {\"trust\": 0, \"affection\": 0, \"respect\": 0}}\nValues -3 to +3. 0 for casual chat." % [
-		npc.npc_name, other_name,
-		npc.npc_name, my_line.left(120),
-		other_name, their_line.left(120),
-		rel["trust"], rel["affection"], rel["respect"]
-	]
-
-	GeminiClient.generate(
-		"Analyze conversation impact. Return ONLY valid JSON.",
-		prompt,
-		func(text: String, success: bool) -> void:
-			if not is_instance_valid(npc):
-				return
-			_apply_npc_impact(other_npc, text, success, my_line, their_line),
-		GeminiClient.MODEL_LITE
+	var body: Dictionary = {
+		"speaker_name": npc.npc_name,
+		"listener_name": other_name,
+		"speaker_line": my_line,
+		"listener_line": their_line,
+		"current_relationship": rel,
+		"game_time": {
+			"total_minutes": GameClock.total_minutes,
+			"hour": GameClock.hour,
+			"minute": GameClock.minute,
+			"day": GameClock.total_minutes / 1440,
+		},
+	}
+	ApiClient.post("/chat/npc-impact", body, func(response: Dictionary, success: bool) -> void:
+		if not is_instance_valid(npc):
+			return
+		if success:
+			var a2b: Dictionary = response.get("a_to_b", {})
+			var b2a: Dictionary = response.get("b_to_a", {})
+			var a_t: int = clampi(int(a2b.get("trust_change", 0)), -3, 3)
+			var a_a: int = clampi(int(a2b.get("affection_change", 0)), -3, 3)
+			var a_r: int = clampi(int(a2b.get("respect_change", 0)), -3, 3)
+			var b_t: int = clampi(int(b2a.get("trust_change", 0)), -3, 3)
+			var b_a: int = clampi(int(b2a.get("affection_change", 0)), -3, 3)
+			var b_r: int = clampi(int(b2a.get("respect_change", 0)), -3, 3)
+			if a_t == 0 and a_a == 0 and a_r == 0: a_t = 1
+			if b_t == 0 and b_a == 0 and b_r == 0: b_t = 1
+			Relationships.modify(npc.npc_name, other_name, a_t, a_a, a_r)
+			Relationships.modify(other_name, npc.npc_name, b_t, b_a, b_r)
+			var total_mag: int = absi(a_t) + absi(a_a) + absi(a_r)
+			var conv_count: int = _npc_conv_totals.get(other_name, 0)
+			if total_mag >= 3 or conv_count % 3 == 0:
+				_update_npc_summary_via_api(other_name, my_line, their_line)
+			if OS.is_debug_build():
+				print("[NPC Impact API] %s→%s: T:%+d A:%+d R:%+d | %s→%s: T:%+d A:%+d R:%+d" % [
+					npc.npc_name, other_name, a_t, a_a, a_r, other_name, npc.npc_name, b_t, b_a, b_r])
+		else:
+			Relationships.modify_mutual(npc.npc_name, other_name, 1, 1, 0)
 	)
 
 
-func _apply_npc_impact(other_npc: CharacterBody2D, raw_json: String, success: bool, my_line: String, their_line: String) -> void:
-	## Parse and apply bidirectional NPC-NPC conversation impact.
-	var other_name: String = other_npc.npc_name if is_instance_valid(other_npc) else ""
-	if not success or raw_json == "" or other_name == "":
-		if other_name != "":
-			Relationships.modify_mutual(npc.npc_name, other_name, 1, 1, 0)
-		return
-
-	var data: Variant = GeminiClient.parse_json_response(raw_json)
-	if data == null or not data is Dictionary:
-		Relationships.modify_mutual(npc.npc_name, other_name, 1, 1, 0)
-		return
-
-	var a2b: Dictionary = data.get("a_to_b", {})
-	var b2a: Dictionary = data.get("b_to_a", {})
-
-	var a_t: int = clampi(int(a2b.get("trust", 0)), -3, 3)
-	var a_a: int = clampi(int(a2b.get("affection", 0)), -3, 3)
-	var a_r: int = clampi(int(a2b.get("respect", 0)), -3, 3)
-	var b_t: int = clampi(int(b2a.get("trust", 0)), -3, 3)
-	var b_a: int = clampi(int(b2a.get("affection", 0)), -3, 3)
-	var b_r: int = clampi(int(b2a.get("respect", 0)), -3, 3)
-
-	# If all zero, give minimal +1 trust for showing up
-	if a_t == 0 and a_a == 0 and a_r == 0:
-		a_t = 1
-	if b_t == 0 and b_a == 0 and b_r == 0:
-		b_t = 1
-	Relationships.modify(npc.npc_name, other_name, a_t, a_a, a_r)
-	Relationships.modify(other_name, npc.npc_name, b_t, b_a, b_r)
-
-	# NPC summary update — every 3rd conversation OR total magnitude >= 3
-	var total_mag: int = absi(a_t) + absi(a_a) + absi(a_r)
-	var conv_count: int = _npc_conv_totals.get(other_name, 0)
-	if total_mag >= 3 or conv_count % 3 == 0:
-		_update_npc_summary_async(other_name, my_line, their_line)
-
-	if OS.is_debug_build():
-		print("[NPC Impact] %s→%s: T:%+d A:%+d R:%+d | %s→%s: T:%+d A:%+d R:%+d" % [
-			npc.npc_name, other_name, a_t, a_a, a_r,
-			other_name, npc.npc_name, b_t, b_a, b_r])
-
-
-func _update_npc_summary_async(other_name: String, my_line: String, their_line: String) -> void:
-	## Ask Flash Lite to update this NPC's impression of another NPC after conversation.
-	if not GeminiClient.has_api_key():
-		return
-	var old_summary: String = npc.memory.core_memory.get("npc_summaries", {}).get(other_name, "No prior impression")
-	var prompt: String = "%s had this exchange with %s: \"%s\" / \"%s\"\nPrevious impression of %s: \"%s\"\nWrite a 1-2 sentence updated impression:" % [
-		npc.npc_name, other_name, my_line.left(100), their_line.left(100), other_name, old_summary
-	]
-	GeminiClient.generate(
-		"You are %s. Write a brief 1-2 sentence impression of %s." % [npc.npc_name, other_name],
-		prompt,
-		func(text: String, success: bool) -> void:
-			if not is_instance_valid(npc):
-				return
-			if success and text != "":
-				npc.memory.update_npc_summary(other_name, text.strip_edges().left(200))
+func _update_npc_summary_via_api(other_name: String, my_line: String, their_line: String) -> void:
+	## Ask the backend to update this NPC's impression of another NPC after conversation.
+	var body: Dictionary = {
+		"npc_name": npc.npc_name,
+		"other_name": other_name,
+		"my_line": my_line.left(100),
+		"their_line": their_line.left(100),
+	}
+	ApiClient.post("/chat/npc-summary", body, func(response: Dictionary, success: bool) -> void:
+		if not is_instance_valid(npc):
+			return
+		if success and response.get("success", false):
+			var summary: String = response.get("response_text", "")
+			if summary != "":
+				npc.memory.update_npc_summary(other_name, summary.left(200))
 				if OS.is_debug_build():
-					print("[Memory] %s updated summary of %s: %s" % [npc.npc_name, other_name, text.strip_edges().left(80)]),
-		GeminiClient.MODEL_LITE
+					print("[Memory API] %s updated summary of %s: %s" % [npc.npc_name, other_name, summary.left(80)])
 	)

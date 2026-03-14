@@ -1,6 +1,6 @@
 extends RefCounted
 ## Handles all memory save/load: JSON persistence, embedding binary files,
-## backward-compatible serialization, and migration from old MemoryStream.
+## and backward-compatible serialization.
 ## Owned by MemorySystem — accesses shared data via _mem reference.
 
 var _mem  # MemorySystem parent — untyped to avoid circular class_name dependency
@@ -143,10 +143,10 @@ func load_embeddings() -> void:
 			_mem.episodic_memories[i]["embedding"] = PackedFloat32Array()
 
 
-# --- Old MemoryStream compatibility (serialize/deserialize) ---
+# --- Legacy format serialization (backward compat with town.gd save) ---
 
 func serialize_compat() -> Dictionary:
-	## Returns data in old MemoryStream format for backward compat with town.gd save.
+	## Returns data in legacy format for backward compat with town.gd save.
 	var serialized_memories: Array[Dictionary] = []
 	for mem: Dictionary in _mem.episodic_memories:
 		var s: Dictionary = mem.duplicate()
@@ -160,7 +160,7 @@ func serialize_compat() -> Dictionary:
 
 
 func deserialize_compat(data: Dictionary) -> void:
-	## Restores from old MemoryStream serialized format.
+	## Restores from legacy serialized format.
 	_mem.episodic_memories.clear()
 	var raw_memories: Array = data.get("memories", [])
 	for raw: Variant in raw_memories:
@@ -204,35 +204,3 @@ func deserialize_compat(data: Dictionary) -> void:
 		if not mem.has("entities"):
 			mem["entities"] = typed_parts
 		_mem.episodic_memories.append(mem)
-
-
-# --- Migration ---
-
-func migrate_from_memory_stream(old_stream: MemoryStream) -> void:
-	## Migrate memories from old MemoryStream to new episodic tier.
-	for old_mem: Dictionary in old_stream.memories:
-		var mem: Dictionary = old_mem.duplicate()
-		# Assign new ID
-		mem["id"] = "mem_%04d" % _mem._next_memory_id
-		_mem._next_memory_id += 1
-		# Copy text field
-		if not mem.has("text"):
-			mem["text"] = mem.get("description", "")
-		if not mem.has("timestamp"):
-			mem["timestamp"] = mem.get("game_time", 0)
-		if not mem.has("stability"):
-			mem["stability"] = _mem.STABILITY_BY_TYPE.get(mem.get("type", "observation"), 12.0)
-		if not mem.has("observation_count"):
-			mem["observation_count"] = 1
-		if not mem.has("protected"):
-			mem["protected"] = mem.get("importance", 0.0) >= 8.0
-		if not mem.has("superseded"):
-			mem["superseded"] = false
-		if not mem.has("game_day"):
-			var t: int = mem.get("game_time", 0)
-			mem["game_day"] = t / 1440
-			mem["game_hour"] = (t % 1440) / 60
-		if not mem.has("entities"):
-			mem["entities"] = mem.get("participants", [])
-		_mem.episodic_memories.append(mem)
-	print("[Memory] Migrated %d old memories for %s" % [old_stream.memories.size(), _mem._npc_name])

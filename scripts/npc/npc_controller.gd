@@ -1,7 +1,7 @@
 extends CharacterBody2D
 ## Controls a single NPC: needs-driven movement, perception, memory, conversations, LLM dialogue.
 ## Uses AStarGrid2D waypoint-following instead of NavigationAgent2D.
-## Memory Stream replaces the old flat observation array with scored retrieval.
+## Three-tier MemorySystem with scored retrieval, backed by Python API.
 
 const SPEED: float = 80.0
 const TILE_SIZE: int = 32
@@ -24,7 +24,7 @@ var hunger: float = 100.0
 var energy: float = 100.0
 var social: float = 100.0
 
-# Three-tier memory system (replaces old flat MemoryStream)
+# Three-tier memory system
 var memory: MemorySystem = MemorySystem.new()
 
 # A* waypoint following
@@ -541,7 +541,7 @@ func _add_memory_with_embedding(description: String, type: String, actor: String
 		participants: Array[String], observer_loc: String, observed_loc: String,
 		importance: float, valence: float) -> void:
 	## Routes memory creation to the Python backend via ApiClient.
-	## Falls back to local MemorySystem if backend is unavailable.
+	## Falls back to local MemorySystem if backend is unavailable or API call fails.
 	if ApiClient.is_available():
 		var body: Dictionary = {
 			"text": description,
@@ -573,6 +573,6 @@ func _add_memory_with_embedding(description: String, type: String, actor: String
 	if reflection:
 		reflection.on_memory_added(importance, type)
 
-	# Safety valve: compress if episodic memories grow too large
+	# Safety valve: trigger maintenance if episodic memories grow too large
 	if memory.episodic_memories.size() > 500 and reflection:
-		reflection._compress_memories()
+		reflection.run_midnight_maintenance()

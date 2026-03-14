@@ -5,7 +5,7 @@ extends RefCounted
 ## Tier 1: Episodic Memory — searchable, no hard cap, scored retrieval
 ## Tier 2: Archival Summaries — compressed old memories (future use)
 ##
-## Replaces the flat MemoryStream with deduplication, state-change detection,
+## Features deduplication, state-change detection,
 ## stability-based decay, and hybrid retrieval (embedding + recency + importance).
 ##
 ## Delegates retrieval to MemoryRetrieval and persistence to MemoryPersistence.
@@ -200,7 +200,7 @@ func create_memory(text: String, type: String, entities: Array[String],
 	var memory: Dictionary = {
 		"id": mem_id,
 		"text": text,
-		"description": text,  # backward compat with old MemoryStream
+		"description": text,  # backward compat alias
 		"type": type,
 		"importance": clamped_importance,
 		"emotional_valence": clamped_valence,
@@ -238,7 +238,7 @@ func create_memory(text: String, type: String, entities: Array[String],
 func add_memory(text: String, type: String, actor: String,
 		participants: Array[String], observer_loc: String, observed_loc: String,
 		importance: float, valence: float) -> Dictionary:
-	## Main entry point — backwards-compatible with old MemoryStream.add_memory().
+	## Main entry point for adding memories with deduplication.
 	## Handles deduplication for observations/environment types.
 
 	# DEDUPLICATION for observations and environment scans
@@ -329,7 +329,7 @@ static func cosine_similarity(a: PackedFloat32Array, b: PackedFloat32Array) -> f
 	return _MemoryRetrievalScript.cosine_similarity(a, b)
 
 
-# --- Backward-compatible accessors (match old MemoryStream API) ---
+# --- Query accessors ---
 
 func get_recent(count: int = 10) -> Array[Dictionary]:
 	if episodic_memories.is_empty():
@@ -518,10 +518,6 @@ func serialize() -> Dictionary:
 
 func deserialize(data: Dictionary) -> void:
 	_persistence.deserialize_compat(data)
-
-
-func migrate_from_memory_stream(old_stream: MemoryStream) -> void:
-	_persistence.migrate_from_memory_stream(old_stream)
 
 
 # --- Deduplication Helpers ---

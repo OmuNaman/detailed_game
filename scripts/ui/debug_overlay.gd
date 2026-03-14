@@ -76,24 +76,15 @@ func _refresh() -> void:
 		entry.text = text
 		_container.add_child(entry)
 
-	# Gemini API cost tracker at the bottom
-	if GeminiClient.total_requests > 0:
-		var cost_entry: RichTextLabel = RichTextLabel.new()
-		cost_entry.bbcode_enabled = true
-		cost_entry.fit_content = true
-		cost_entry.custom_minimum_size = Vector2(280, 0)
-		cost_entry.scroll_active = false
-
-		# Gemini 2.0 Flash pricing: ~$0.10/1M input, ~$0.40/1M output
-		var input_cost: float = GeminiClient.total_input_tokens * 0.10 / 1000000.0
-		var output_cost: float = GeminiClient.total_output_tokens * 0.40 / 1000000.0
-		var total_cost: float = input_cost + output_cost
-
-		cost_entry.text = "\n[color=#AAA]Gemini: %d calls, ~$%.4f est. (%d in / %d out tokens)[/color]" % [
-			GeminiClient.total_requests, total_cost,
-			GeminiClient.total_input_tokens, GeminiClient.total_output_tokens
-		]
-		_container.add_child(cost_entry)
+	# Backend status at the bottom
+	var status_entry: RichTextLabel = RichTextLabel.new()
+	status_entry.bbcode_enabled = true
+	status_entry.fit_content = true
+	status_entry.custom_minimum_size = Vector2(280, 0)
+	status_entry.scroll_active = false
+	var backend_status: String = "[color=#4C4]Backend: connected[/color]" if ApiClient.is_available() else "[color=#C44]Backend: offline[/color]"
+	status_entry.text = "\n" + backend_status
+	_container.add_child(status_entry)
 
 
 func _make_bar(value: float, color: String) -> String:
