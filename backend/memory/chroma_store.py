@@ -6,6 +6,7 @@ Post-retrieval re-ranking uses the exact hybrid scoring formula from memory_retr
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import logging
@@ -29,6 +30,7 @@ logger = logging.getLogger(__name__)
 
 _chroma_client: chromadb.ClientAPI | None = None
 _project_root = Path(__file__).resolve().parent.parent.parent
+_embed_semaphore = asyncio.Semaphore(3)  # Max 3 concurrent embedding API calls
 
 
 def get_chroma_client() -> chromadb.ClientAPI:
@@ -71,10 +73,11 @@ async def add_memory(
     mem_id = memory.get("id", f"mem_{collection.count():04d}")
     text = memory.get("text", memory.get("description", ""))
 
-    # Generate embedding
-    embedding = None
+    # Generate embedding with rate limiting
+    embedding: list[float] = []
     if embed and text:
-        embedding = await llm_client.embed_text(text)
+        async with _embed_semaphore:
+            embedding = await llm_client.embed_text(text)
 
     # Prepare metadata (ChromaDB only stores flat string/int/float/bool)
     metadata = _memory_to_metadata(memory)
@@ -84,8 +87,12 @@ async def add_memory(
         "documents": [text],
         "metadatas": [metadata],
     }
+    # Always pass embedding to prevent ChromaDB from using its built-in ONNX model
     if embedding:
         add_kwargs["embeddings"] = [embedding]
+    else:
+        # Zero vector fallback — will be re-embedded on next retrieval if needed
+        add_kwargs["embeddings"] = [[0.0] * settings.embedding_dim]
 
     collection.upsert(**add_kwargs)
     return memory
@@ -195,8 +202,9 @@ async def retrieve_memories(
     elif len(conditions) > 1:
         where_filter = {"$and": conditions}
 
-    # Embed query
-    query_embedding = await llm_client.embed_text(query_text)
+    # Embed query with rate limiting
+    async with _embed_semaphore:
+        query_embedding = await llm_client.embed_text(query_text)
 
     n_candidates = min(50, collection.count())
 
