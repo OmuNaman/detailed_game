@@ -11,7 +11,7 @@ var _http_pool: Array[HTTPRequest] = []
 var _pool_busy: Array[bool] = []
 var _pool_callbacks: Array[Callable] = []
 var _request_queue: Array[Dictionary] = []
-var _backend_available: bool = false
+var _backend_available: bool = true  # Assume backend is up; health check will disable if not
 
 
 func _ready() -> void:
@@ -38,11 +38,14 @@ func _check_health_with_retry(retries_left: int) -> void:
 		_backend_available = success
 		if success:
 			print("[ApiClient] Backend connected at %s" % BASE_URL)
-			# If this was a retry, refresh memory caches for all NPCs
-			if retries_left < 3:
-				for npc: Node in get_tree().get_nodes_in_group("npcs"):
-					if "memory" in npc:
-						npc.memory.refresh_cache()
+			# Refresh caches and re-trigger planning for all NPCs
+			for npc: Node in get_tree().get_nodes_in_group("npcs"):
+				if "memory" in npc:
+					npc.memory.refresh_cache()
+				if "planner" in npc and npc.planner._plan_level1.size() > 0:
+					# Re-generate plan now that backend is available
+					npc.planner._planning_in_progress = false
+					npc.planner.generate_daily_plan()
 		elif retries_left > 0:
 			# Retry after 2 seconds
 			get_tree().create_timer(2.0).timeout.connect(func() -> void:
