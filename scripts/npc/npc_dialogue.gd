@@ -45,7 +45,7 @@ func get_dialogue_response_async(callback: Callable) -> void:
 	var system_prompt: String = _build_system_prompt()
 	var user_message: String = _build_dialogue_context()
 
-	GeminiClient.generate(system_prompt, user_message, func(text: String, success: bool) -> void:
+	GeminiClient.generate_priority(system_prompt, user_message, func(text: String, success: bool) -> void:
 		if not is_instance_valid(npc):
 			return
 		if success and text != "":
@@ -83,7 +83,7 @@ func get_conversation_reply_async(player_message: String, history: Array[Diction
 	context += "\n%s just said: \"%s\"\n" % [PlayerProfile.player_name, player_message]
 	context += "\nRespond naturally in character. 1-3 sentences. Continue the conversation based on what %s said." % PlayerProfile.player_name
 
-	GeminiClient.generate(system_prompt, context, func(text: String, success: bool) -> void:
+	GeminiClient.generate_priority(system_prompt, context, func(text: String, success: bool) -> void:
 		if not is_instance_valid(npc):
 			return
 		if success and text != "":

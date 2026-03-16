@@ -169,6 +169,7 @@ body { font-family: system-ui, -apple-system, sans-serif; background: #fff; colo
     <div class="tab" onclick="switchTab('plan')">Plan</div>
     <div class="tab" onclick="switchTab('reflections')">Reflections</div>
     <div class="tab" onclick="switchTab('gossip')">Gossip</div>
+    <div class="tab" onclick="switchTab('events')">Events</div>
   </div>
   <div class="content" id="content"></div>
   <div class="bottom-bar" id="bottom-bar">
@@ -287,6 +288,7 @@ function renderNpcDetail() {
   else if (currentTab === 'plan') content.innerHTML = renderPlan(npc);
   else if (currentTab === 'reflections') content.innerHTML = renderReflections(npc);
   else if (currentTab === 'gossip') content.innerHTML = renderGossip(npc);
+  else if (currentTab === 'events') content.innerHTML = renderEvents();
 }
 
 function renderOverview(npc) {
@@ -406,6 +408,41 @@ function renderGossip(npc) {
       <div style="font-size:11px;color:#9ca3af;margin-top:2px">${formatTime(g.time)}</div></div>`;
   }
   html += '</div>';
+  return html;
+}
+
+function renderEvents() {
+  // Events tab is global (not per-NPC)
+  let html = '';
+
+  // Chronicle entries (Gemini Pro narrative summaries)
+  const chronicles = state.chronicle || [];
+  if (chronicles.length) {
+    html += '<div class="card" style="border-left:3px solid #4f46e5;background:#fafafe">';
+    html += '<h3 style="color:#4f46e5">Town Chronicle (Gemini 2.5 Pro)</h3>';
+    for (const c of chronicles.slice().reverse()) {
+      html += `<div style="padding:10px 0;border-bottom:1px solid #eef2ff">
+        <div style="font-size:14px;line-height:1.6;color:#1a1a1a;font-style:italic">"${c.text}"</div>
+        <div style="font-size:11px;color:#9ca3af;margin-top:4px">${formatTime(c.time)}</div></div>`;
+    }
+    html += '</div>';
+  }
+
+  // Raw events
+  const events = state.events || [];
+  if (!events.length && !chronicles.length) return '<div class="empty"><h3>No events yet</h3><p>Events appear as NPCs converse, gossip, plan, and reflect</p></div>';
+
+  if (events.length) {
+    html += '<div class="card"><h3>Recent Events</h3>';
+    for (const ev of events) {
+      const actors = (ev.entities || [ev.actor]).join(', ');
+      html += `<div class="mem-item">
+        <span class="mem-badge ${ev.type}">${ev.type.replace('_',' ')}</span>
+        <div><div class="mem-text"><strong>${ev.actor}</strong>: ${ev.text}</div>
+        <div class="mem-meta">${formatTime(ev.time)}${actors !== ev.actor ? ' | with '+actors : ''}</div></div></div>`;
+    }
+    html += '</div>';
+  }
   return html;
 }
 

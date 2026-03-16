@@ -1,16 +1,21 @@
 extends Node
 ## Calls Gemini 2.5 Flash for NPC dialogue generation.
-## Parallel request pool (3 concurrent) for 61-NPC throughput.
+## 4 concurrent pool for NPC traffic + 1 dedicated player node for instant response.
 
 const MODEL: String = "gemini-2.5-flash"
 const MODEL_LITE: String = "gemini-2.5-flash-lite"
+const MODEL_PRO: String = "gemini-2.5-pro"
 const API_URL: String = "https://generativelanguage.googleapis.com/v1beta/models/"
-const MAX_CONCURRENT: int = 8
+const MAX_CONCURRENT: int = 4
 
 var _api_key: String = ""
 var _request_queue: Array[Dictionary] = []  # {system, message, callback, model}
 var _http_pool: Array[HTTPRequest] = []
 var _active_requests: Dictionary = {}  # {HTTPRequest: Dictionary (queue entry)}
+
+# Dedicated player dialogue node — bypasses the queue entirely
+var _player_http: HTTPRequest
+var _player_request: Dictionary = {}  # Currently active player request
 
 # Cost tracking
 var total_input_tokens: int = 0
@@ -29,14 +34,23 @@ func _ready() -> void:
 	else:
 		push_warning("GeminiClient: No API key found at user://.env — dialogue generation disabled")
 
-	# Create pool of HTTPRequest nodes for parallel requests
+	# NPC request pool (4 concurrent)
 	for i: int in range(MAX_CONCURRENT):
 		var http := HTTPRequest.new()
-		http.timeout = 5.0
+		http.timeout = 10.0
+		http.download_chunk_size = 1048576  # 1MB — fixes body size limit errors
 		http.name = "HTTPRequest_%d" % i
 		add_child(http)
 		http.request_completed.connect(_on_request_completed.bind(http))
 		_http_pool.append(http)
+
+	# Dedicated player dialogue node (never queued)
+	_player_http = HTTPRequest.new()
+	_player_http.timeout = 10.0
+	_player_http.download_chunk_size = 1048576
+	_player_http.name = "PlayerHTTPRequest"
+	add_child(_player_http)
+	_player_http.request_completed.connect(_on_player_request_completed)
 
 
 func has_api_key() -> bool:
@@ -45,7 +59,6 @@ func has_api_key() -> bool:
 
 func generate(system_prompt: String, user_message: String, callback: Callable, model_override: String = "") -> void:
 	## Queue a generation request. Callback receives (response_text: String, success: bool).
-	## Optional model_override to use a different model (e.g., MODEL_LITE for analysis).
 	if _api_key == "":
 		callback.call("", false)
 		return
@@ -54,10 +67,63 @@ func generate(system_prompt: String, user_message: String, callback: Callable, m
 	_process_queue()
 
 
+func generate_priority(system_prompt: String, user_message: String, callback: Callable, model_override: String = "") -> void:
+	## Send immediately on the dedicated player HTTP node — bypasses queue.
+	## If player node is busy, inserts at FRONT of the normal queue.
+	if _api_key == "":
+		callback.call("", false)
+		return
+	var model: String = model_override if model_override != "" else MODEL
+	var req: Dictionary = {"system": system_prompt, "message": user_message, "callback": callback, "model": model}
+
+	if _player_request.is_empty():
+		_send_player_request(req)
+	else:
+		# Player HTTP busy — insert at front of queue for next available pool slot
+		_request_queue.push_front(req)
+		_process_queue()
+
+
+func _send_player_request(req: Dictionary) -> void:
+	_player_request = req
+	var model: String = req.get("model", MODEL)
+	var url: String = API_URL + model + ":generateContent?key=" + _api_key
+	var gen_config: Dictionary = {"maxOutputTokens": 256, "temperature": 0.8}
+	var body: Dictionary = {
+		"contents": [{"parts": [{"text": req["message"]}]}],
+		"systemInstruction": {"parts": [{"text": req["system"]}]},
+		"generationConfig": gen_config,
+	}
+	var json_body: String = JSON.stringify(body)
+	var headers: PackedStringArray = ["Content-Type: application/json"]
+	total_input_tokens += (req["system"].length() + req["message"].length()) / 4
+	total_requests += 1
+
+	var err: Error = _player_http.request(url, headers, HTTPClient.METHOD_POST, json_body)
+	if err != OK:
+		push_warning("GeminiClient: Player HTTP request failed: %s" % error_string(err))
+		_player_request["callback"].call("", false)
+		_player_request = {}
+
+
+func _on_player_request_completed(result: int, code: int, _headers: PackedStringArray, body: PackedByteArray) -> void:
+	if _player_request.is_empty():
+		return
+	var req: Dictionary = _player_request
+	_player_request = {}
+
+	if code != 200 or result != HTTPRequest.RESULT_SUCCESS:
+		push_warning("GeminiClient: Player API error %d (result: %d)" % [code, result])
+		req["callback"].call("", false)
+		return
+
+	var text: String = _extract_text(body)
+	req["callback"].call(text, text != "")
+
+
 func _process_queue() -> void:
 	## Fire up to MAX_CONCURRENT requests simultaneously.
 	while not _request_queue.is_empty() and _active_requests.size() < MAX_CONCURRENT:
-		# Find a free HTTPRequest node
 		var free_http: HTTPRequest = null
 		for http: HTTPRequest in _http_pool:
 			if not _active_requests.has(http):
@@ -72,8 +138,6 @@ func _process_queue() -> void:
 		var model: String = req.get("model", MODEL)
 		var url: String = API_URL + model + ":generateContent?key=" + _api_key
 		var gen_config: Dictionary = {"maxOutputTokens": 256, "temperature": 0.8}
-		if model == MODEL:
-			gen_config["thinkingConfig"] = {"thinkingBudget": 0}
 		var body: Dictionary = {
 			"contents": [{"parts": [{"text": req["message"]}]}],
 			"systemInstruction": {"parts": [{"text": req["system"]}]},
@@ -105,23 +169,24 @@ func _on_request_completed(result: int, code: int, _headers: PackedStringArray, 
 		_process_queue()
 		return
 
+	var text: String = _extract_text(body)
+	req["callback"].call(text, text != "")
+	_process_queue()
+
+
+func _extract_text(body: PackedByteArray) -> String:
 	var json := JSON.new()
 	if json.parse(body.get_string_from_utf8()) != OK:
-		push_warning("GeminiClient: Failed to parse response")
-		req["callback"].call("", false)
-		_process_queue()
-		return
-
-	var text: String = ""
+		return ""
 	var candidates: Array = json.data.get("candidates", [])
-	if not candidates.is_empty():
-		var parts: Array = candidates[0].get("content", {}).get("parts", [])
-		if not parts.is_empty():
-			text = parts[0].get("text", "")
-			total_output_tokens += text.length() / 4
-
-	req["callback"].call(text.strip_edges(), text != "")
-	_process_queue()
+	if candidates.is_empty():
+		return ""
+	var parts: Array = candidates[0].get("content", {}).get("parts", [])
+	if parts.is_empty():
+		return ""
+	var text: String = parts[0].get("text", "")
+	total_output_tokens += text.length() / 4
+	return text.strip_edges()
 
 
 static func parse_json_response(text: String) -> Variant:

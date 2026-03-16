@@ -1,9 +1,16 @@
 extends Node
 ## Periodically exports all NPC state to a JSON file for the web inspector dashboard.
 ## Writes to user://inspector_state.json every 5 real seconds.
+## Also generates periodic "Town Chronicle" entries via Gemini 2.5 Pro.
 
 var _timer: float = 0.0
 const EXPORT_INTERVAL: float = 5.0
+
+# Chronicle system — Gemini Pro analyzes events every 10 game minutes
+var _last_chronicle_time: int = 0
+var _chronicle_entries: Array[Dictionary] = []  # [{time, text}]
+var _chronicle_in_progress: bool = false
+const CHRONICLE_INTERVAL_MINUTES: int = 10
 
 
 func _process(delta: float) -> void:
@@ -11,6 +18,7 @@ func _process(delta: float) -> void:
 	if _timer >= EXPORT_INTERVAL:
 		_timer = 0.0
 		_export_state()
+		_maybe_generate_chronicle()
 
 
 func _export_state() -> void:
@@ -24,6 +32,8 @@ func _export_state() -> void:
 		},
 		"npcs": {},
 		"world": _get_world_state(),
+		"events": _get_global_events(),
+		"chronicle": _chronicle_entries.duplicate(),
 	}
 
 	for npc_node: Node in get_tree().get_nodes_in_group("npcs"):
@@ -167,3 +177,84 @@ func _get_world_state() -> Dictionary:
 			"output_tokens": GeminiClient.total_output_tokens,
 		},
 	}
+
+
+func _get_global_events() -> Array[Dictionary]:
+	## Aggregate notable events from all NPCs into a global timeline.
+	var events: Array[Dictionary] = []
+	var cutoff: int = maxi(GameClock.total_minutes - 120, 0)  # Last 2 game hours
+
+	for npc_node: Node in get_tree().get_nodes_in_group("npcs"):
+		var npc: CharacterBody2D = npc_node as CharacterBody2D
+		for mem: Dictionary in npc.memory.episodic_memories:
+			var t: int = mem.get("timestamp", mem.get("game_time", 0))
+			if t < cutoff:
+				continue
+			var mem_type: String = mem.get("type", "")
+			# Only include notable event types
+			if mem_type in ["dialogue", "player_dialogue", "gossip", "reflection", "plan"]:
+				events.append({
+					"time": t,
+					"type": mem_type,
+					"text": str(mem.get("text", mem.get("description", ""))).left(200),
+					"actor": npc.npc_name,
+					"entities": mem.get("entities", mem.get("participants", [])),
+				})
+
+	# Deduplicate (same conversation seen by both participants)
+	var seen: Dictionary = {}
+	var unique: Array[Dictionary] = []
+	for ev: Dictionary in events:
+		var key: String = "%d_%s" % [ev["time"], ev["text"].left(40)]
+		if not seen.has(key):
+			seen[key] = true
+			unique.append(ev)
+
+	unique.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
+		return a["time"] > b["time"])
+	return unique.slice(0, mini(50, unique.size()))
+
+
+func _maybe_generate_chronicle() -> void:
+	## Every CHRONICLE_INTERVAL_MINUTES game minutes, send recent events to Gemini Pro for narrative summary.
+	if not GeminiClient.has_api_key():
+		return
+	if _chronicle_in_progress:
+		return
+	if GameClock.total_minutes - _last_chronicle_time < CHRONICLE_INTERVAL_MINUTES:
+		return
+
+	_last_chronicle_time = GameClock.total_minutes
+	var events: Array[Dictionary] = _get_global_events()
+	if events.is_empty():
+		return
+
+	# Build event summary for Pro
+	var event_text: String = "Recent events in DeepTown (last 10 game minutes):\n"
+	var count: int = 0
+	for ev: Dictionary in events:
+		if count >= 20:
+			break
+		event_text += "- [%s] %s: %s\n" % [ev["type"], ev["actor"], ev["text"].left(100)]
+		count += 1
+
+	var prompt: String = "You are a narrator for a medieval town simulation called DeepTown. Based on these recent events, write a 2-3 sentence narrative summary of what's happening in town right now. Be specific about names and locations. Write in present tense, like a town chronicle entry.\n\n%s\n\nWrite ONLY the chronicle entry:" % event_text
+
+	_chronicle_in_progress = true
+	GeminiClient.generate(
+		"You are a concise medieval town narrator.",
+		prompt,
+		func(text: String, success: bool) -> void:
+			_chronicle_in_progress = false
+			if success and text.strip_edges() != "":
+				_chronicle_entries.append({
+					"time": GameClock.total_minutes,
+					"text": text.strip_edges().left(400),
+				})
+				# Keep last 20 entries
+				if _chronicle_entries.size() > 20:
+					_chronicle_entries = _chronicle_entries.slice(_chronicle_entries.size() - 20)
+				if OS.is_debug_build():
+					print("[Chronicle] %s" % text.strip_edges().left(100)),
+		GeminiClient.MODEL_PRO
+	)
