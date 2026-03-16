@@ -195,7 +195,8 @@ func _build_level1_prompt() -> String:
 	prompt += "20-22|%s|Dinner and winding down\n\n" % npc.home_building
 	prompt += "Rules:\n"
 	prompt += "- Cover hours 5-22 with NO gaps\n"
-	prompt += "- Include meals at home around hours 7, 12, 19\n"
+	prompt += "- Usually include meals at home (hours 7, 12, 19), UNLESS you have a special event, party, or gathering to attend\n"
+	prompt += "- PRIORITIZE attending events, festivals, or gatherings you have heard about — these are more important than routine\n"
 	prompt += "- Be specific about WHO and WHY for social visits\n"
 	prompt += "- Make today different based on your feelings and relationships\n"
 	prompt += "- Include at least one social visit outside your workplace\n"
@@ -505,12 +506,15 @@ func evaluate_reaction(observation: String, importance: float) -> void:
 	var current_activity_text: String = active_plan.get("reason", npc.current_activity) if not active_plan.is_empty() else npc.current_activity
 
 	var system_prompt: String = "You are %s, a %s in DeepTown. Decide if this observation warrants changing your current plans." % [npc.npc_name, npc.job]
-	var user_msg: String = "You are currently: %s at the %s.\n" % [current_activity_text, npc._current_destination]
+	var user_msg: String = "Current hour: %d:00\n" % GameClock.hour
+	user_msg += "You are currently: %s at the %s.\n" % [current_activity_text, npc._current_destination]
 	user_msg += "New observation (importance %.1f): %s\n\n" % [importance, observation]
 	user_msg += "Should you CONTINUE your current activity or REACT by changing plans?\n"
 	user_msg += "If CONTINUE, just write: CONTINUE\n"
-	user_msg += "If REACT, write: REACT|LOCATION|NEW_ACTIVITY\n"
-	user_msg += "Example: REACT|Tavern|Rush to check on the commotion\n"
+	user_msg += "If the event is happening NOW or very soon, write: REACT|LOCATION|NEW_ACTIVITY\n"
+	user_msg += "If the event is in the FUTURE (later today), write: REACT|LOCATION|ACTIVITY|HOUR\n"
+	user_msg += "Example (now): REACT|Tavern|Rush to check on the commotion\n"
+	user_msg += "Example (future): REACT|Tavern|Attend the festival|18\n"
 	user_msg += "Only react if this is truly important enough to disrupt your plans."
 
 	GeminiClient.generate(system_prompt, user_msg,
@@ -542,8 +546,13 @@ func _process_reaction_result(text: String, observation: String) -> void:
 	if parts.size() < 3:
 		return
 
-	var location_raw: String = text.split("\n")[0].strip_edges().split("|")[1].strip_edges()
-	var activity_raw: String = text.split("\n")[0].strip_edges().split("|")[2].strip_edges()
+	var raw_line: String = text.split("\n")[0].strip_edges()
+	var raw_parts: PackedStringArray = raw_line.split("|")
+	var location_raw: String = raw_parts[1].strip_edges()
+	var activity_raw: String = raw_parts[2].strip_edges()
+	var target_hour: int = -1
+	if raw_parts.size() >= 4:
+		target_hour = raw_parts[3].strip_edges().to_int()
 
 	# Fuzzy match location
 	var valid_names: Array[String] = []
@@ -560,27 +569,36 @@ func _process_reaction_result(text: String, observation: String) -> void:
 	if matched_loc == "":
 		matched_loc = npc._current_destination
 
-	# Override the current L1 block
-	var l1_idx: int = _get_current_l1_index()
-	if l1_idx >= 0:
-		_plan_level1[l1_idx]["location"] = matched_loc
-		_plan_level1[l1_idx]["activity"] = activity_raw if activity_raw != "" else "reacting to event"
-		_plan_level2.erase(l1_idx)
-		var keys_to_erase: Array[String] = []
-		for key: String in _plan_level3.keys():
-			if key.begins_with(str(l1_idx) + "_"):
-				keys_to_erase.append(key)
-		for key: String in keys_to_erase:
-			_plan_level3.erase(key)
+	if target_hour > 0 and target_hour > GameClock.hour + 1:
+		# FUTURE EVENT: Insert a new L1 block at the target hour instead of overriding now
+		_insert_future_event_block(matched_loc, activity_raw, target_hour)
+		var react_desc: String = "Decided to attend: %s — planning to go to %s at hour %d" % [observation, matched_loc, target_hour]
+		npc._add_memory_with_embedding(react_desc, "plan", npc.npc_name,
+			[npc.npc_name] as Array[String], npc._current_destination, matched_loc, 4.0, 0.0)
+		if OS.is_debug_build():
+			print("[Reaction] %s: REACT (future) — scheduled %s at hour %d for '%s'" % [npc.npc_name, matched_loc, target_hour, activity_raw])
+	else:
+		# IMMEDIATE: Override the current L1 block
+		var l1_idx: int = _get_current_l1_index()
+		if l1_idx >= 0:
+			_plan_level1[l1_idx]["location"] = matched_loc
+			_plan_level1[l1_idx]["activity"] = activity_raw if activity_raw != "" else "reacting to event"
+			_plan_level2.erase(l1_idx)
+			var keys_to_erase: Array[String] = []
+			for key: String in _plan_level3.keys():
+				if key.begins_with(str(l1_idx) + "_"):
+					keys_to_erase.append(key)
+			for key: String in keys_to_erase:
+				_plan_level3.erase(key)
 
-	var react_desc: String = "Decided to react to: %s — going to %s to %s" % [observation, matched_loc, activity_raw]
-	npc._add_memory_with_embedding(react_desc, "plan", npc.npc_name,
-		[npc.npc_name] as Array[String], npc._current_destination, matched_loc, 4.0, 0.0)
+		var react_desc: String = "Decided to react to: %s — going to %s to %s" % [observation, matched_loc, activity_raw]
+		npc._add_memory_with_embedding(react_desc, "plan", npc.npc_name,
+			[npc.npc_name] as Array[String], npc._current_destination, matched_loc, 4.0, 0.0)
 
-	# Immediately redirect
-	npc._update_destination(GameClock.hour)
-	if OS.is_debug_build():
-		print("[Reaction] %s: REACT — redirecting to %s for '%s'" % [npc.npc_name, matched_loc, activity_raw])
+		# Immediately redirect
+		npc._update_destination(GameClock.hour)
+		if OS.is_debug_build():
+			print("[Reaction] %s: REACT — redirecting to %s for '%s'" % [npc.npc_name, matched_loc, activity_raw])
 
 
 func _match_building_name(input: String, valid_names: Array[String]) -> String:
@@ -610,6 +628,56 @@ func _get_current_l1_index() -> int:
 		if hour >= plan["start_hour"] and hour < plan["end_hour"]:
 			return i
 	return -1
+
+
+func _insert_future_event_block(location: String, activity: String, hour: int) -> void:
+	## Insert a new L1 plan block for a future event, splitting the existing block if needed.
+	var target_idx: int = -1
+	for i: int in range(_plan_level1.size()):
+		if hour >= _plan_level1[i]["start_hour"] and hour < _plan_level1[i]["end_hour"]:
+			target_idx = i
+			break
+
+	if target_idx < 0:
+		# No existing block covers this hour — append
+		_plan_level1.append({
+			"start_hour": hour, "end_hour": mini(hour + 2, 22),
+			"location": location, "activity": activity, "decomposed": false
+		})
+		_plan_level1.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
+			return a["start_hour"] < b["start_hour"])
+		return
+
+	# Split the existing block around the event
+	var original: Dictionary = _plan_level1[target_idx]
+	var event_end: int = mini(hour + 2, original["end_hour"])
+
+	var new_blocks: Array[Dictionary] = []
+	if hour > original["start_hour"]:
+		new_blocks.append({"start_hour": original["start_hour"], "end_hour": hour,
+			"location": original["location"], "activity": original["activity"], "decomposed": false})
+	new_blocks.append({"start_hour": hour, "end_hour": event_end,
+		"location": location, "activity": activity, "decomposed": false})
+	if event_end < original["end_hour"]:
+		new_blocks.append({"start_hour": event_end, "end_hour": original["end_hour"],
+			"location": original["location"], "activity": original["activity"], "decomposed": false})
+
+	# Replace the original block with the split blocks
+	_plan_level1.remove_at(target_idx)
+	for i: int in range(new_blocks.size()):
+		_plan_level1.insert(target_idx + i, new_blocks[i])
+
+	# Clear L2/L3 for affected indices
+	_plan_level2.erase(target_idx)
+	var keys_to_erase: Array[String] = []
+	for key: String in _plan_level3.keys():
+		if key.begins_with(str(target_idx) + "_"):
+			keys_to_erase.append(key)
+	for key: String in keys_to_erase:
+		_plan_level3.erase(key)
+
+	if OS.is_debug_build():
+		print("[Reaction] %s: Scheduled future event at hour %d — %s at %s" % [npc.npc_name, hour, activity, location])
 
 
 func get_current_plan() -> Dictionary:

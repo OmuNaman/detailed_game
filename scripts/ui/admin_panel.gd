@@ -166,6 +166,10 @@ func _seed_event() -> void:
 				if count >= 2:
 					break
 
+	# Trigger reaction evaluation + full replan so the event gets into today's schedule
+	_selected_npc.planner.evaluate_reaction(obs_text, 7.0)
+	_selected_npc.planner.generate_daily_plan()
+
 	_seed_event_text.text = ""
 	_set_status("[color=#8f8]Seeded event into %s! Watch gossip propagate.[/color]" % ", ".join(seeded))
 	print("[Seed Event] Injected into %s: \"%s\" at %s hour %d" % [

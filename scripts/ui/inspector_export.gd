@@ -304,4 +304,8 @@ func _check_seed_event() -> void:
 		[npc_name] as Array[String],
 		target_npc._current_destination, location, 7.0, 0.6)
 
-	print("[Seed Event] Injected into %s: \"%s\" at %s hour %d" % [npc_name, event_text.left(60), location, hour])
+	# Trigger reaction evaluation + full replan so the event gets into today's schedule
+	target_npc.planner.evaluate_reaction(obs, 7.0)
+	target_npc.planner.generate_daily_plan()
+
+	print("[Seed Event] Injected into %s: \"%s\" at %s hour %d" % [npc_name, event_text, location, hour])
