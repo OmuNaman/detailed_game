@@ -1,4 +1,4 @@
-[gd_scene load_steps=9 format=3 uid="uid://ctown001"]
+[gd_scene load_steps=10 format=3 uid="uid://ctown001"]
 
 [ext_resource type="Script" path="res://scripts/world/town.gd" id="1_town"]
 [ext_resource type="Script" path="res://scripts/world/town_generator.gd" id="2_gen"]
@@ -8,6 +8,7 @@
 [ext_resource type="PackedScene" path="res://scenes/ui/dialogue_box.tscn" id="6_dialogue"]
 [ext_resource type="PackedScene" path="res://scenes/ui/debug_overlay.tscn" id="7_debug"]
 [ext_resource type="Script" path="res://scripts/ui/admin_panel.gd" id="8_admin"]
+[ext_resource type="Script" path="res://scripts/ui/inspector_export.gd" id="9_inspector"]
 
 [node name="Town" type="Node2D"]
 script = ExtResource("1_town")
@@ -30,3 +31,6 @@ position = Vector2(816, 432)
 
 [node name="AdminPanel" type="CanvasLayer" parent="."]
 script = ExtResource("8_admin")
+
+[node name="InspectorExport" type="Node" parent="."]
+script = ExtResource("9_inspector")
