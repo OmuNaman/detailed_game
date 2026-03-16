@@ -310,7 +310,7 @@ func _begin_conversation(other_npc: CharacterBody2D) -> void:
 	other_npc.activity._update_activity_label()
 
 	# Run conversation (Gemini or template)
-	if not GeminiClient.has_api_key() or GeminiClient._request_queue.size() > 25:
+	if not GeminiClient.has_api_key() or GeminiClient._request_queue.size() > 40:
 		_fake_npc_conversation_locked(other_npc)
 	else:
 		_real_npc_conversation_locked(other_npc)
@@ -359,7 +359,7 @@ func _real_npc_conversation_locked(other_npc: CharacterBody2D) -> void:
 	_approach_topic = ""
 
 	var max_turns: int = NPC_CONV_MAX_TURNS
-	if GeminiClient._request_queue.size() > 15:
+	if GeminiClient._request_queue.size() > 25:
 		max_turns = 2  # Throttle when busy
 
 	# Start the recursive turn chain
@@ -703,7 +703,7 @@ func _analyze_npc_conversation_impact(other_npc: CharacterBody2D, my_line: Strin
 	var other_name: String = other_npc.npc_name
 	_npc_conv_totals[other_name] = _npc_conv_totals.get(other_name, 0) + 1
 
-	if not GeminiClient.has_api_key() or GeminiClient._request_queue.size() > 20:
+	if not GeminiClient.has_api_key() or GeminiClient._request_queue.size() > 35:
 		Relationships.modify_mutual(npc.npc_name, other_name, 1, 1, 0)
 		return
 

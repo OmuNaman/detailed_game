@@ -5,7 +5,7 @@ extends Node
 const MODEL: String = "gemini-2.5-flash"
 const MODEL_LITE: String = "gemini-2.5-flash-lite"
 const API_URL: String = "https://generativelanguage.googleapis.com/v1beta/models/"
-const MAX_CONCURRENT: int = 3
+const MAX_CONCURRENT: int = 8
 
 var _api_key: String = ""
 var _request_queue: Array[Dictionary] = []  # {system, message, callback, model}

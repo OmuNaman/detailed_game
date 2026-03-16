@@ -283,7 +283,8 @@ Write ONLY the summary paragraph, nothing else.""" % [npc.npc_name, PlayerProfil
 				npc.npc_name, candidates.size(), summary_mem.get("game_day", 0)])
 
 			# Check if we can do period compression too
-			_compress_episodes()
+			_compress_episodes(),
+		GeminiClient.MODEL_LITE
 	)
 
 
@@ -325,5 +326,6 @@ Write ONLY the period summary:""" % [npc.npc_name, PlayerProfile.player_name, te
 
 			npc.memory.save_all()
 
-			print("[Compress] %s: Compressed %d episodes into period summary" % [npc.npc_name, batch.size()])
+			print("[Compress] %s: Compressed %d episodes into period summary" % [npc.npc_name, batch.size()]),
+		GeminiClient.MODEL_LITE
 	)

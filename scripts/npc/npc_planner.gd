@@ -344,7 +344,7 @@ func _decompose_to_level2(l1_index: int) -> void:
 		}]
 		return
 
-	if not GeminiClient.has_api_key() or GeminiClient._request_queue.size() > 30:
+	if not GeminiClient.has_api_key() or GeminiClient._request_queue.size() > 50:
 		var steps: Array[Dictionary] = []
 		for h: int in range(l1["start_hour"], l1["end_hour"]):
 			steps.append({"hour": h, "end_hour": h + 1, "activity": l1["activity"]})
@@ -424,7 +424,7 @@ func _decompose_to_level3(l1_idx: int, l2_idx: int) -> void:
 
 	var l2: Dictionary = l2_steps[l2_idx]
 
-	if not GeminiClient.has_api_key() or GeminiClient._request_queue.size() > 30:
+	if not GeminiClient.has_api_key() or GeminiClient._request_queue.size() > 50:
 		_plan_level3[l3_key] = [{"start_min": 0, "end_min": 60, "activity": l2["activity"]}]
 		return
 
@@ -490,7 +490,7 @@ func evaluate_reaction(observation: String, importance: float) -> void:
 	## Evaluate whether the NPC should react to a significant observation by replanning.
 	if _reaction_in_progress or _decomposition_in_progress or _planning_in_progress:
 		return
-	if not GeminiClient.has_api_key() or GeminiClient._request_queue.size() > 30:
+	if not GeminiClient.has_api_key() or GeminiClient._request_queue.size() > 50:
 		return
 	var current_time: int = GameClock.total_minutes
 	if current_time - _last_reaction_eval_time < REACTION_COOLDOWN_MINUTES:
