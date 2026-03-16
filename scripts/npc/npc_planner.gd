@@ -240,6 +240,21 @@ func _build_planning_context() -> String:
 
 	# Recent notable events
 	var recent: Array[Dictionary] = npc.memory.get_recent(10)
+
+	# Ensure high-importance memories from today survive EnvScan flooding
+	var today_start: int = (GameClock.total_minutes / 1440) * 1440
+	var recent_texts: Dictionary = {}
+	for mem: Dictionary in recent:
+		recent_texts[mem.get("description", "")] = true
+	for mem: Dictionary in npc.memory.episodic_memories:
+		if mem.get("superseded", false):
+			continue
+		var t: int = mem.get("game_time", mem.get("timestamp", 0))
+		if t < today_start:
+			continue
+		if mem.get("importance", 0.0) >= 6.0 and not recent_texts.has(mem.get("description", "")):
+			recent.append(mem)
+
 	if not recent.is_empty():
 		context += "Recent events:\n"
 		for mem: Dictionary in recent:
