@@ -282,6 +282,7 @@ function renderNpcDetail() {
     </div>`;
 
   const content = document.getElementById('content');
+  saveSeedForm();  // Preserve form state before re-render
   if (currentTab === 'overview') content.innerHTML = renderOverview(npc);
   else if (currentTab === 'memories') content.innerHTML = renderMemories(npc);
   else if (currentTab === 'relationships') content.innerHTML = renderRelationships(npc);
@@ -289,6 +290,7 @@ function renderNpcDetail() {
   else if (currentTab === 'reflections') content.innerHTML = renderReflections(npc);
   else if (currentTab === 'gossip') content.innerHTML = renderGossip(npc);
   else if (currentTab === 'events') content.innerHTML = renderEvents();
+  restoreSeedForm();  // Restore form state after re-render
 }
 
 function renderOverview(npc) {
@@ -411,6 +413,35 @@ function renderGossip(npc) {
   return html;
 }
 
+// Preserve seed form values across re-renders
+let _seedFormState = {text: '', location: '', hour: '18', npc: '', status: ''};
+
+function saveSeedForm() {
+  const t = document.getElementById('seed-text');
+  if (t) {
+    _seedFormState.text = t.value;
+    _seedFormState.location = document.getElementById('seed-location')?.value || '';
+    _seedFormState.hour = document.getElementById('seed-hour')?.value || '18';
+    _seedFormState.npc = document.getElementById('seed-npc')?.value || '';
+    _seedFormState.status = document.getElementById('seed-status')?.textContent || '';
+  }
+}
+
+function restoreSeedForm() {
+  const t = document.getElementById('seed-text');
+  if (t) {
+    t.value = _seedFormState.text;
+    const loc = document.getElementById('seed-location');
+    if (loc && _seedFormState.location) loc.value = _seedFormState.location;
+    const hr = document.getElementById('seed-hour');
+    if (hr) hr.value = _seedFormState.hour;
+    const npc = document.getElementById('seed-npc');
+    if (npc && _seedFormState.npc) npc.value = _seedFormState.npc;
+    const st = document.getElementById('seed-status');
+    if (st) st.textContent = _seedFormState.status;
+  }
+}
+
 async function seedEvent() {
   const text = document.getElementById('seed-text').value.trim();
   const location = document.getElementById('seed-location').value;
@@ -426,6 +457,8 @@ async function seedEvent() {
     const result = await resp.json();
     document.getElementById('seed-status').textContent = result.status || 'Sent!';
     document.getElementById('seed-text').value = '';
+    _seedFormState.text = '';
+    _seedFormState.status = result.status || 'Sent!';
   } catch(e) { document.getElementById('seed-status').textContent = 'Error: ' + e; }
 }
 
