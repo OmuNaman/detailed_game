@@ -411,9 +411,46 @@ function renderGossip(npc) {
   return html;
 }
 
+async function seedEvent() {
+  const text = document.getElementById('seed-text').value.trim();
+  const location = document.getElementById('seed-location').value;
+  const hour = document.getElementById('seed-hour').value;
+  const npc = document.getElementById('seed-npc').value;
+  if (!text) { alert('Enter an event description'); return; }
+  try {
+    const resp = await fetch('/api/seed_event', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({text, location, hour: parseInt(hour), npc})
+    });
+    const result = await resp.json();
+    document.getElementById('seed-status').textContent = result.status || 'Sent!';
+    document.getElementById('seed-text').value = '';
+  } catch(e) { document.getElementById('seed-status').textContent = 'Error: ' + e; }
+}
+
 function renderEvents() {
   // Events tab is global (not per-NPC)
   let html = '';
+
+  // Seed Event form
+  const npcNames = state ? Object.keys(state.npcs).sort() : [];
+  const locations = ['Bakery','General Store','Tavern','Church','Sheriff Office','Courthouse','Blacksmith','Library','Inn','Market','Carpenter Workshop','Tailor Shop','Stables','Clinic','School'];
+  html += '<div class="card" style="border:2px solid #4f46e5;background:#fafaff">';
+  html += '<h3 style="color:#4f46e5">Seed Event (Stanford Party Planning)</h3>';
+  html += '<div style="font-size:12px;color:#6b7280;margin-bottom:8px">Inject an observation into one NPC. Their planning system will react, and gossip will spread it naturally through conversations.</div>';
+  html += '<input id="seed-text" style="width:100%;padding:8px;border:1px solid #d1d5db;border-radius:6px;font-size:13px;margin-bottom:8px" placeholder="e.g., Grand festival with music, food, and dancing for everyone">';
+  html += '<div style="display:flex;gap:8px;align-items:center;margin-bottom:8px">';
+  html += '<select id="seed-location" style="padding:6px;border:1px solid #d1d5db;border-radius:4px;font-size:12px">';
+  for (const loc of locations) html += `<option value="${loc}">${loc}</option>`;
+  html += '</select>';
+  html += '<label style="font-size:12px">Hour:</label><input id="seed-hour" type="number" min="6" max="21" value="18" style="width:50px;padding:4px;border:1px solid #d1d5db;border-radius:4px;font-size:12px">';
+  html += '<label style="font-size:12px">Seed NPC:</label><select id="seed-npc" style="padding:6px;border:1px solid #d1d5db;border-radius:4px;font-size:12px">';
+  for (const n of npcNames) html += `<option value="${n}">${n}</option>`;
+  html += '</select>';
+  html += '<button onclick="seedEvent()" style="padding:6px 16px;background:#4f46e5;color:#fff;border:none;border-radius:6px;cursor:pointer;font-size:12px;font-weight:500">Seed Event</button>';
+  html += '<span id="seed-status" style="font-size:11px;color:#10b981"></span>';
+  html += '</div></div>';
 
   // Chronicle entries (Gemini Pro narrative summaries)
   const chronicles = state.chronicle || [];
@@ -473,6 +510,30 @@ class InspectorHandler(SimpleHTTPRequestHandler):
             except FileNotFoundError:
                 self.wfile.write(b'{"error": "inspector_state.json not found. Is the game running?"}')
             except Exception as e:
+                self.wfile.write(json.dumps({"error": str(e)}).encode('utf-8'))
+        else:
+            self.send_response(404)
+            self.end_headers()
+
+    def do_POST(self):
+        if self.path == '/api/seed_event':
+            content_length = int(self.headers.get('Content-Length', 0))
+            body = self.rfile.read(content_length)
+            try:
+                data = json.loads(body)
+                # Write seed event file next to state file
+                seed_path = os.path.join(os.path.dirname(STATE_FILE), "seed_event.json")
+                with open(seed_path, 'w', encoding='utf-8') as f:
+                    json.dump(data, f)
+                self.send_response(200)
+                self.send_header('Content-Type', 'application/json')
+                self.end_headers()
+                self.wfile.write(json.dumps({"status": f"Seeded into {data.get('npc', '?')}! Check game console."}).encode('utf-8'))
+                print(f"  [Seed] Wrote seed_event.json for {data.get('npc', '?')}: {data.get('text', '')[:60]}")
+            except Exception as e:
+                self.send_response(500)
+                self.send_header('Content-Type', 'application/json')
+                self.end_headers()
                 self.wfile.write(json.dumps({"error": str(e)}).encode('utf-8'))
         else:
             self.send_response(404)

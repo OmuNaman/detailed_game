@@ -19,6 +19,7 @@ func _process(delta: float) -> void:
 		_timer = 0.0
 		_export_state()
 		_maybe_generate_chronicle()
+		_check_seed_event()
 
 
 func _export_state() -> void:
@@ -258,3 +259,49 @@ func _maybe_generate_chronicle() -> void:
 					print("[Chronicle] %s" % text.strip_edges().left(100)),
 		GeminiClient.MODEL_PRO
 	)
+
+
+func _check_seed_event() -> void:
+	## Poll for seed_event.json written by the web inspector. Inject into NPC when found.
+	var seed_path: String = "user://seed_event.json"
+	if not FileAccess.file_exists(seed_path):
+		return
+	var file := FileAccess.open(seed_path, FileAccess.READ)
+	if not file:
+		return
+	var json := JSON.new()
+	if json.parse(file.get_as_text()) != OK:
+		DirAccess.remove_absolute(ProjectSettings.globalize_path(seed_path))
+		return
+	var data: Dictionary = json.data
+	DirAccess.remove_absolute(ProjectSettings.globalize_path(seed_path))
+
+	var npc_name: String = data.get("npc", "")
+	var event_text: String = data.get("text", "")
+	var location: String = data.get("location", "Tavern")
+	var hour: int = data.get("hour", 18)
+
+	if npc_name == "" or event_text == "":
+		return
+
+	# Find the target NPC
+	var target_npc: CharacterBody2D = null
+	for npc_node: Node in get_tree().get_nodes_in_group("npcs"):
+		var npc: CharacterBody2D = npc_node as CharacterBody2D
+		if npc.npc_name == npc_name:
+			target_npc = npc
+			break
+
+	if target_npc == null:
+		push_warning("[Seed Event] NPC '%s' not found" % npc_name)
+		return
+
+	# Build and inject the observation
+	var obs: String = "%s heard that %s at the %s at %d:00 today. Everyone in town is welcome." % [
+		npc_name, event_text, location, hour]
+	target_npc._add_memory_with_embedding(
+		obs, "observation", "townsfolk",
+		[npc_name] as Array[String],
+		target_npc._current_destination, location, 7.0, 0.6)
+
+	print("[Seed Event] Injected into %s: \"%s\" at %s hour %d" % [npc_name, event_text.left(60), location, hour])

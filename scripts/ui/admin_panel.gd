@@ -26,6 +26,12 @@ var _hunger_slider: HSlider
 var _energy_slider: HSlider
 var _social_slider: HSlider
 
+# Seed Event
+var _seed_event_text: LineEdit
+var _seed_location: OptionButton
+var _seed_hour: SpinBox
+var _seed_also_coworkers: CheckBox
+
 # Status
 var _status_label: RichTextLabel
 
@@ -118,6 +124,52 @@ func _inject_memory() -> void:
 	_set_status("[color=#8f8]Injected memory into %s (imp=%.1f, val=%.1f)[/color]" % [
 		_selected_npc.npc_name, importance, valence])
 	print("[Admin] Injected memory into %s: \"%s\"" % [_selected_npc.npc_name, text.left(60)])
+
+
+func _seed_event() -> void:
+	## Stanford-style event injection. Injects observation into selected NPC (+ optional coworkers).
+	## Importance 7.0 triggers reaction evaluation, gossip handles propagation.
+	if _selected_npc == null or _seed_event_text.text.strip_edges() == "":
+		_set_status("[color=#f88]No NPC selected or empty event text[/color]")
+		return
+	var event_desc: String = _seed_event_text.text.strip_edges()
+	var location: String = _seed_location.get_item_text(_seed_location.selected)
+	var hour: int = int(_seed_hour.value)
+
+	# Build natural observation text
+	var obs_text: String = "%s heard that %s at the %s at %d:00 today. Everyone in town is welcome." % [
+		_selected_npc.npc_name, event_desc, location, hour]
+
+	# Inject into primary NPC
+	var seeded: Array[String] = [_selected_npc.npc_name]
+	_selected_npc._add_memory_with_embedding(
+		obs_text, "observation", "townsfolk",
+		[_selected_npc.npc_name] as Array[String],
+		_selected_npc._current_destination, location, 7.0, 0.6)
+
+	# Optionally inject into 2 coworkers (same workplace)
+	if _seed_also_coworkers.button_pressed:
+		var count: int = 0
+		for npc_node: Node in get_tree().get_nodes_in_group("npcs"):
+			var npc: CharacterBody2D = npc_node as CharacterBody2D
+			if npc == _selected_npc:
+				continue
+			if npc.workplace_building == _selected_npc.workplace_building:
+				var coworker_obs: String = "%s heard from %s that %s at the %s at %d:00 today." % [
+					npc.npc_name, _selected_npc.npc_name, event_desc, location, hour]
+				npc._add_memory_with_embedding(
+					coworker_obs, "gossip", _selected_npc.npc_name,
+					[npc.npc_name, _selected_npc.npc_name] as Array[String],
+					npc._current_destination, location, 6.0, 0.5)
+				seeded.append(npc.npc_name)
+				count += 1
+				if count >= 2:
+					break
+
+	_seed_event_text.text = ""
+	_set_status("[color=#8f8]Seeded event into %s! Watch gossip propagate.[/color]" % ", ".join(seeded))
+	print("[Seed Event] Injected into %s: \"%s\" at %s hour %d" % [
+		", ".join(seeded), event_desc, location, hour])
 
 
 func _give_directive() -> void:
@@ -269,6 +321,38 @@ func _build_ui() -> void:
 	inject_btn.text = "Inject Memory"
 	inject_btn.pressed.connect(_inject_memory)
 	vbox.add_child(inject_btn)
+
+	vbox.add_child(HSeparator.new())
+
+	# === SEED EVENT (Stanford-style) ===
+	vbox.add_child(_section_label("Seed Event (Stanford Party Planning)"))
+	_seed_event_text = LineEdit.new()
+	_seed_event_text.placeholder_text = "Event (e.g., 'Grand festival with music and food')"
+	vbox.add_child(_seed_event_text)
+	var seed_row := HBoxContainer.new()
+	vbox.add_child(seed_row)
+	seed_row.add_child(_label("Location:"))
+	_seed_location = OptionButton.new()
+	_seed_location.custom_minimum_size.x = 140
+	for bld: String in BUILDINGS:
+		_seed_location.add_item(bld)
+	seed_row.add_child(_seed_location)
+	seed_row.add_child(_spacer())
+	seed_row.add_child(_label("Hour:"))
+	_seed_hour = SpinBox.new()
+	_seed_hour.min_value = 6
+	_seed_hour.max_value = 21
+	_seed_hour.value = 18
+	seed_row.add_child(_seed_hour)
+	seed_row.add_child(_spacer())
+	_seed_also_coworkers = CheckBox.new()
+	_seed_also_coworkers.text = "Also seed 2 coworkers"
+	_seed_also_coworkers.button_pressed = true
+	seed_row.add_child(_seed_also_coworkers)
+	var seed_btn := Button.new()
+	seed_btn.text = "Seed Event (inject + let gossip propagate)"
+	seed_btn.pressed.connect(_seed_event)
+	vbox.add_child(seed_btn)
 
 	vbox.add_child(HSeparator.new())
 
