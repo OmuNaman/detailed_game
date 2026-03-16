@@ -111,7 +111,7 @@ func _process_queue() -> void:
 func _send_request_on(http: HTTPRequest, req: Dictionary) -> void:
 	var model: String = req.get("model", MODEL)
 	var url: String = API_URL + model + ":generateContent?key=" + _api_key
-	var gen_config: Dictionary = {"maxOutputTokens": 256, "temperature": 0.8}
+	var gen_config: Dictionary = {"maxOutputTokens": 1024, "temperature": 0.8, "thinkingConfig": {"thinkingBudget": 0}}
 	var body: Dictionary = {
 		"contents": [{"parts": [{"text": req["message"]}]}],
 		"systemInstruction": {"parts": [{"text": req["system"]}]},
