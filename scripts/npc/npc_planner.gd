@@ -239,7 +239,7 @@ func _build_planning_context() -> String:
 		context += "\n"
 
 	# Recent notable events
-	var recent: Array[Dictionary] = npc.memory.get_recent(5)
+	var recent: Array[Dictionary] = npc.memory.get_recent(10)
 	if not recent.is_empty():
 		context += "Recent events:\n"
 		for mem: Dictionary in recent:

@@ -93,6 +93,10 @@ func _serialize_npc(npc: CharacterBody2D) -> Dictionary:
 		})
 	data["plan"] = plan_blocks
 
+	# Current granular task (L2/L3 decomposition)
+	var current_plan: Dictionary = npc.planner.get_current_plan()
+	data["current_active_task"] = current_plan.get("reason", "No active task")
+
 	# Recent memories (last 20)
 	var recent_mems: Array[Dictionary] = []
 	var all_mems: Array = npc.memory.episodic_memories
@@ -304,8 +308,7 @@ func _check_seed_event() -> void:
 		[npc_name] as Array[String],
 		target_npc._current_destination, location, 7.0, 0.6)
 
-	# Trigger reaction evaluation + full replan so the event gets into today's schedule
+	# Trigger reaction evaluation — handles both immediate and future events via _process_reaction_result()
 	target_npc.planner.evaluate_reaction(obs, 7.0)
-	target_npc.planner.generate_daily_plan()
 
 	print("[Seed Event] Injected into %s: \"%s\" at %s hour %d" % [npc_name, event_text, location, hour])

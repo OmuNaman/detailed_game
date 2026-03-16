@@ -378,7 +378,11 @@ function renderRelationships(npc) {
 
 function renderPlan(npc) {
   if (!npc.plan?.length) return '<div class="empty"><h3>No plan for today</h3></div>';
-  let html = '<div class="card"><h3>Today\'s Schedule</h3>';
+  let html = `<div class="card" style="border:2px solid #10b981;background:#ecfdf5">
+    <h3 style="color:#047857">Current Action (L2/L3)</h3>
+    <div style="font-size:14px;font-weight:500;color:#065f46">${npc.current_active_task || 'No active task'}</div>
+  </div>`;
+  html += '<div class="card"><h3>Today\'s Schedule (L1)</h3>';
   const hour = state.game_time.hour;
   for (const b of npc.plan) {
     const current = hour >= b.start && hour < b.end ? 'current' : '';
