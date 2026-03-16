@@ -1,15 +1,16 @@
 extends Node
 ## Calls Gemini 2.5 Flash for NPC dialogue generation.
-## Falls back gracefully if API unavailable. Serializes requests via queue.
+## Parallel request pool (3 concurrent) for 61-NPC throughput.
 
 const MODEL: String = "gemini-2.5-flash"
 const MODEL_LITE: String = "gemini-2.5-flash-lite"
 const API_URL: String = "https://generativelanguage.googleapis.com/v1beta/models/"
+const MAX_CONCURRENT: int = 3
 
 var _api_key: String = ""
-var _http: HTTPRequest
-var _request_queue: Array[Dictionary] = []  # {system, message, callback}
-var _is_requesting: bool = false
+var _request_queue: Array[Dictionary] = []  # {system, message, callback, model}
+var _http_pool: Array[HTTPRequest] = []
+var _active_requests: Dictionary = {}  # {HTTPRequest: Dictionary (queue entry)}
 
 # Cost tracking
 var total_input_tokens: int = 0
@@ -28,10 +29,14 @@ func _ready() -> void:
 	else:
 		push_warning("GeminiClient: No API key found at user://.env — dialogue generation disabled")
 
-	_http = HTTPRequest.new()
-	_http.timeout = 5.0
-	add_child(_http)
-	_http.request_completed.connect(_on_request_completed)
+	# Create pool of HTTPRequest nodes for parallel requests
+	for i: int in range(MAX_CONCURRENT):
+		var http := HTTPRequest.new()
+		http.timeout = 5.0
+		http.name = "HTTPRequest_%d" % i
+		add_child(http)
+		http.request_completed.connect(_on_request_completed.bind(http))
+		_http_pool.append(http)
 
 
 func has_api_key() -> bool:
@@ -46,48 +51,53 @@ func generate(system_prompt: String, user_message: String, callback: Callable, m
 		return
 	var model: String = model_override if model_override != "" else MODEL
 	_request_queue.append({"system": system_prompt, "message": user_message, "callback": callback, "model": model})
-	if not _is_requesting:
-		_process_queue()
+	_process_queue()
 
 
 func _process_queue() -> void:
-	if _is_requesting or _request_queue.is_empty():
+	## Fire up to MAX_CONCURRENT requests simultaneously.
+	while not _request_queue.is_empty() and _active_requests.size() < MAX_CONCURRENT:
+		# Find a free HTTPRequest node
+		var free_http: HTTPRequest = null
+		for http: HTTPRequest in _http_pool:
+			if not _active_requests.has(http):
+				free_http = http
+				break
+		if free_http == null:
+			break
+
+		var req: Dictionary = _request_queue.pop_front()
+		_active_requests[free_http] = req
+
+		var model: String = req.get("model", MODEL)
+		var url: String = API_URL + model + ":generateContent?key=" + _api_key
+		var gen_config: Dictionary = {"maxOutputTokens": 256, "temperature": 0.8}
+		if model == MODEL:
+			gen_config["thinkingConfig"] = {"thinkingBudget": 0}
+		var body: Dictionary = {
+			"contents": [{"parts": [{"text": req["message"]}]}],
+			"systemInstruction": {"parts": [{"text": req["system"]}]},
+			"generationConfig": gen_config,
+		}
+		var json_body: String = JSON.stringify(body)
+		var headers: PackedStringArray = ["Content-Type: application/json"]
+
+		total_input_tokens += (req["system"].length() + req["message"].length()) / 4
+		total_requests += 1
+
+		var err: Error = free_http.request(url, headers, HTTPClient.METHOD_POST, json_body)
+		if err != OK:
+			push_warning("GeminiClient: HTTP request failed: %s" % error_string(err))
+			_active_requests.erase(free_http)
+			req["callback"].call("", false)
+			continue
+
+
+func _on_request_completed(result: int, code: int, _headers: PackedStringArray, body: PackedByteArray, http: HTTPRequest) -> void:
+	if not _active_requests.has(http):
 		return
-	_is_requesting = true
-	var req: Dictionary = _request_queue[0]
-
-	var model: String = req.get("model", MODEL)
-	var url: String = API_URL + model + ":generateContent?key=" + _api_key
-	var gen_config: Dictionary = {"maxOutputTokens": 256, "temperature": 0.8}
-	# Only include thinkingConfig for models that support it (2.5 Flash main)
-	if model == MODEL:
-		gen_config["thinkingConfig"] = {"thinkingBudget": 0}
-	var body: Dictionary = {
-		"contents": [{"parts": [{"text": req["message"]}]}],
-		"systemInstruction": {"parts": [{"text": req["system"]}]},
-		"generationConfig": gen_config,
-	}
-	var json_body: String = JSON.stringify(body)
-	var headers: PackedStringArray = ["Content-Type: application/json"]
-
-	# Estimate input tokens for cost tracking
-	total_input_tokens += (req["system"].length() + req["message"].length()) / 4
-	total_requests += 1
-
-	var err: Error = _http.request(url, headers, HTTPClient.METHOD_POST, json_body)
-	if err != OK:
-		push_warning("GeminiClient: HTTP request failed: %s" % error_string(err))
-		_is_requesting = false
-		var failed_req: Dictionary = _request_queue.pop_front()
-		failed_req["callback"].call("", false)
-		_process_queue()
-
-
-func _on_request_completed(result: int, code: int, _headers: PackedStringArray, body: PackedByteArray) -> void:
-	_is_requesting = false
-	if _request_queue.is_empty():
-		return
-	var req: Dictionary = _request_queue.pop_front()
+	var req: Dictionary = _active_requests[http]
+	_active_requests.erase(http)
 
 	if code != 200 or result != HTTPRequest.RESULT_SUCCESS:
 		push_warning("GeminiClient: API error %d (result: %d)" % [code, result])
@@ -116,7 +126,6 @@ func _on_request_completed(result: int, code: int, _headers: PackedStringArray, 
 
 static func parse_json_response(text: String) -> Variant:
 	## Parse JSON from Gemini response, stripping markdown fences if present.
-	## Returns Dictionary/Array on success, null on failure.
 	var cleaned: String = text.strip_edges()
 	if cleaned.begins_with("```"):
 		var first_newline: int = cleaned.find("\n")

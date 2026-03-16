@@ -145,19 +145,32 @@ func _get_npc_workplace(target_name: String) -> String:
 
 
 func _get_npc_roster_text() -> String:
-	## Reusable NPC roster for prompts (prevents hallucinated names).
-	var text: String = "People who live and work in this town:\n"
-	text += "- Maria: Baker, works at Bakery, lives at House 1\n"
-	text += "- Thomas: Shopkeeper, works at General Store, lives at House 2\n"
-	text += "- Elena: Sheriff, works at Sheriff Office, lives at House 3\n"
-	text += "- Gideon: Blacksmith, works at Blacksmith, lives at House 4\n"
-	text += "- Rose: Barmaid, works at Tavern, lives at House 5\n"
-	text += "- Lyra: Clerk, works at Courthouse, lives at House 6\n"
-	text += "- Finn: Farmer/laborer, delivers to General Store, lives at House 7 (married to Clara)\n"
-	text += "- Clara: Devout churchgoer, helps at Church, lives at House 7 (married to Finn)\n"
-	text += "- Bram: Apprentice blacksmith, works at Blacksmith with Gideon, lives at House 8\n"
-	text += "- Old Silas: Retired storyteller, spends time at Tavern, lives at House 9\n"
-	text += "- Father Aldric: Priest, works at Church, lives at House 10\n"
+	## Data-driven NPC roster — includes NPCs this NPC knows (colleagues, neighbors, relationships).
+	var known_names: Dictionary = {}
+	# Always include workplace colleagues and housemates
+	for other: Node in npc.get_tree().get_nodes_in_group("npcs"):
+		var o: CharacterBody2D = other as CharacterBody2D
+		if o == npc:
+			continue
+		if o.workplace_building == npc.workplace_building or o.home_building == npc.home_building:
+			known_names[o.npc_name] = o
+	# Include NPCs with non-zero relationships
+	var all_rels: Dictionary = Relationships.get_all_for(npc.npc_name)
+	for rel_name: String in all_rels:
+		for other: Node in npc.get_tree().get_nodes_in_group("npcs"):
+			var o: CharacterBody2D = other as CharacterBody2D
+			if o.npc_name == rel_name:
+				known_names[o.npc_name] = o
+				break
+	# Cap at 20 to keep prompt manageable
+	var text: String = "People you know in town:\n"
+	var count: int = 0
+	for n: String in known_names:
+		if count >= 20:
+			break
+		var o: CharacterBody2D = known_names[n]
+		text += "- %s: %s, works at %s\n" % [o.npc_name, o.job, o.workplace_building]
+		count += 1
 	text += "\nIMPORTANT: Only reference people from this list. Do NOT invent names.\n"
 	return text
 
@@ -169,7 +182,7 @@ func _build_level1_prompt() -> String:
 	prompt += "Generate 5-8 activity blocks covering every hour of your day.\n\n"
 	prompt += "Your workplace: %s (you typically work there from 6-15)\n" % npc.workplace_building
 	prompt += "Your home: %s\n\n" % npc.home_building
-	prompt += "Available buildings: Bakery, General Store, Tavern, Church, Sheriff Office, Courthouse, Blacksmith\n\n"
+	prompt += "Available buildings: Bakery, General Store, Tavern, Church, Sheriff Office, Courthouse, Blacksmith, Library, Inn, Market, Carpenter Workshop, Tailor Shop, Stables, Clinic, School\n\n"
 	prompt += _get_npc_roster_text()
 	prompt += "\nFormat each block as: START-END|LOCATION|ACTIVITY (one per line)\n"
 	prompt += "Example:\n"
@@ -258,8 +271,10 @@ func _parse_level1_plan(text: String) -> Array[Dictionary]:
 	var valid_buildings: Array[String] = [
 		"Bakery", "General Store", "Tavern", "Church",
 		"Sheriff Office", "Courthouse", "Blacksmith",
+		"Library", "Inn", "Market", "Carpenter Workshop",
+		"Tailor Shop", "Stables", "Clinic", "School",
 	]
-	for i: int in range(1, 12):
+	for i: int in range(1, 47):
 		valid_buildings.append("House %d" % i)
 
 	for line: String in text.split("\n"):
@@ -329,7 +344,7 @@ func _decompose_to_level2(l1_index: int) -> void:
 		}]
 		return
 
-	if not GeminiClient.has_api_key() or GeminiClient._request_queue.size() > 10:
+	if not GeminiClient.has_api_key() or GeminiClient._request_queue.size() > 30:
 		var steps: Array[Dictionary] = []
 		for h: int in range(l1["start_hour"], l1["end_hour"]):
 			steps.append({"hour": h, "end_hour": h + 1, "activity": l1["activity"]})
@@ -409,7 +424,7 @@ func _decompose_to_level3(l1_idx: int, l2_idx: int) -> void:
 
 	var l2: Dictionary = l2_steps[l2_idx]
 
-	if not GeminiClient.has_api_key() or GeminiClient._request_queue.size() > 10:
+	if not GeminiClient.has_api_key() or GeminiClient._request_queue.size() > 30:
 		_plan_level3[l3_key] = [{"start_min": 0, "end_min": 60, "activity": l2["activity"]}]
 		return
 
@@ -475,7 +490,7 @@ func evaluate_reaction(observation: String, importance: float) -> void:
 	## Evaluate whether the NPC should react to a significant observation by replanning.
 	if _reaction_in_progress or _decomposition_in_progress or _planning_in_progress:
 		return
-	if not GeminiClient.has_api_key() or GeminiClient._request_queue.size() > 10:
+	if not GeminiClient.has_api_key() or GeminiClient._request_queue.size() > 30:
 		return
 	var current_time: int = GameClock.total_minutes
 	if current_time - _last_reaction_eval_time < REACTION_COOLDOWN_MINUTES:

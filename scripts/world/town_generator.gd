@@ -3,8 +3,8 @@ extends Node2D
 ## Pathfinding uses AStarGrid2D directly on the tile grid — no NavigationServer needed.
 
 const TILE_SIZE: int = 32
-const MAP_WIDTH: int = 60
-const MAP_HEIGHT: int = 45
+const MAP_WIDTH: int = 120
+const MAP_HEIGHT: int = 70
 
 # Tile IDs (used in the _map array and as TileSet atlas coords)
 enum Tile { GRASS1, PATH, WATER, WALL_FRONT, FLOOR, ROOF, DOOR, GRASS2, GRASS3, WALL_SIDE,
@@ -28,32 +28,86 @@ const ROOF_TINTS: Dictionary = {
 	"Courthouse": Color(0.7, 0.7, 0.7),
 	"Church": Color(0.7, 0.6, 0.8),
 	"Blacksmith": Color(0.5, 0.4, 0.4),
+	"Library": Color(0.6, 0.7, 0.9),
+	"Inn": Color(0.9, 0.7, 0.5),
+	"Market": Color(0.8, 0.9, 0.6),
+	"Carpenter Workshop": Color(0.7, 0.6, 0.4),
+	"Tailor Shop": Color(0.8, 0.6, 0.8),
+	"Stables": Color(0.6, 0.5, 0.3),
+	"Clinic": Color(0.9, 0.9, 0.95),
+	"School": Color(0.8, 0.8, 0.6),
 }
 
 # Building definitions: {name, grid_x, grid_y, width, height}
 var _buildings: Array[Dictionary] = [
-	# --- Commercial row (top) ---
-	{"name": "General Store", "gx": 8, "gy": 6, "w": 7, "h": 5},
-	{"name": "Bakery", "gx": 17, "gy": 6, "w": 6, "h": 5},
-	{"name": "Tavern", "gx": 25, "gy": 5, "w": 8, "h": 6},
-	{"name": "Church", "gx": 38, "gy": 5, "w": 7, "h": 8},
-	# --- Service row (middle) ---
-	{"name": "Sheriff Office", "gx": 8, "gy": 15, "w": 6, "h": 5},
-	{"name": "Courthouse", "gx": 16, "gy": 15, "w": 8, "h": 5},
-	{"name": "Blacksmith", "gx": 38, "gy": 16, "w": 6, "h": 5},
-	# --- Housing row 1 ---
-	{"name": "House 1", "gx": 4, "gy": 25, "w": 6, "h": 5},
-	{"name": "House 2", "gx": 12, "gy": 25, "w": 6, "h": 5},
-	{"name": "House 3", "gx": 20, "gy": 25, "w": 6, "h": 5},
-	{"name": "House 4", "gx": 28, "gy": 25, "w": 6, "h": 5},
-	{"name": "House 5", "gx": 36, "gy": 25, "w": 6, "h": 5},
-	{"name": "House 6", "gx": 44, "gy": 25, "w": 6, "h": 5},
-	# --- Housing row 2 ---
-	{"name": "House 7", "gx": 4, "gy": 33, "w": 6, "h": 5},
-	{"name": "House 8", "gx": 12, "gy": 33, "w": 6, "h": 5},
-	{"name": "House 9", "gx": 20, "gy": 33, "w": 6, "h": 5},
-	{"name": "House 10", "gx": 28, "gy": 33, "w": 6, "h": 5},
-	{"name": "House 11", "gx": 36, "gy": 33, "w": 6, "h": 5},
+	# --- Commercial row 1 (top, y=6) ---
+	{"name": "General Store", "gx": 4, "gy": 6, "w": 7, "h": 5},
+	{"name": "Bakery", "gx": 14, "gy": 6, "w": 6, "h": 5},
+	{"name": "Tavern", "gx": 23, "gy": 5, "w": 8, "h": 6},
+	{"name": "Library", "gx": 35, "gy": 6, "w": 7, "h": 5},
+	{"name": "Inn", "gx": 46, "gy": 5, "w": 8, "h": 6},
+	{"name": "Church", "gx": 58, "gy": 5, "w": 7, "h": 8},
+	# --- Service/commercial row 2 (middle, y=16) ---
+	{"name": "Sheriff Office", "gx": 4, "gy": 16, "w": 6, "h": 5},
+	{"name": "Courthouse", "gx": 13, "gy": 16, "w": 8, "h": 5},
+	{"name": "Market", "gx": 25, "gy": 16, "w": 8, "h": 5},
+	{"name": "Carpenter Workshop", "gx": 37, "gy": 16, "w": 7, "h": 5},
+	{"name": "Tailor Shop", "gx": 48, "gy": 16, "w": 6, "h": 5},
+	{"name": "Blacksmith", "gx": 58, "gy": 16, "w": 6, "h": 5},
+	{"name": "Stables", "gx": 68, "gy": 16, "w": 7, "h": 5},
+	{"name": "Clinic", "gx": 79, "gy": 16, "w": 6, "h": 5},
+	{"name": "School", "gx": 89, "gy": 16, "w": 7, "h": 5},
+	# --- Housing row 1 (y=26) — Houses 1-10 ---
+	{"name": "House 1", "gx": 4, "gy": 26, "w": 6, "h": 5},
+	{"name": "House 2", "gx": 14, "gy": 26, "w": 6, "h": 5},
+	{"name": "House 3", "gx": 24, "gy": 26, "w": 6, "h": 5},
+	{"name": "House 4", "gx": 34, "gy": 26, "w": 6, "h": 5},
+	{"name": "House 5", "gx": 44, "gy": 26, "w": 6, "h": 5},
+	{"name": "House 6", "gx": 54, "gy": 26, "w": 6, "h": 5},
+	{"name": "House 7", "gx": 64, "gy": 26, "w": 6, "h": 5},
+	{"name": "House 8", "gx": 74, "gy": 26, "w": 6, "h": 5},
+	{"name": "House 9", "gx": 84, "gy": 26, "w": 6, "h": 5},
+	{"name": "House 10", "gx": 94, "gy": 26, "w": 6, "h": 5},
+	# --- Housing row 2 (y=34) — House 11 (player) + Houses 12-20 ---
+	{"name": "House 11", "gx": 4, "gy": 34, "w": 6, "h": 5},
+	{"name": "House 12", "gx": 14, "gy": 34, "w": 6, "h": 5},
+	{"name": "House 13", "gx": 24, "gy": 34, "w": 6, "h": 5},
+	{"name": "House 14", "gx": 34, "gy": 34, "w": 6, "h": 5},
+	{"name": "House 15", "gx": 44, "gy": 34, "w": 6, "h": 5},
+	{"name": "House 16", "gx": 54, "gy": 34, "w": 6, "h": 5},
+	{"name": "House 17", "gx": 64, "gy": 34, "w": 6, "h": 5},
+	{"name": "House 18", "gx": 74, "gy": 34, "w": 6, "h": 5},
+	{"name": "House 19", "gx": 84, "gy": 34, "w": 6, "h": 5},
+	{"name": "House 20", "gx": 94, "gy": 34, "w": 6, "h": 5},
+	# --- Housing row 3 (y=42) — Houses 21-30 ---
+	{"name": "House 21", "gx": 4, "gy": 42, "w": 6, "h": 5},
+	{"name": "House 22", "gx": 14, "gy": 42, "w": 6, "h": 5},
+	{"name": "House 23", "gx": 24, "gy": 42, "w": 6, "h": 5},
+	{"name": "House 24", "gx": 34, "gy": 42, "w": 6, "h": 5},
+	{"name": "House 25", "gx": 44, "gy": 42, "w": 6, "h": 5},
+	{"name": "House 26", "gx": 54, "gy": 42, "w": 6, "h": 5},
+	{"name": "House 27", "gx": 64, "gy": 42, "w": 6, "h": 5},
+	{"name": "House 28", "gx": 74, "gy": 42, "w": 6, "h": 5},
+	{"name": "House 29", "gx": 84, "gy": 42, "w": 6, "h": 5},
+	{"name": "House 30", "gx": 94, "gy": 42, "w": 6, "h": 5},
+	# --- Housing row 4 (y=50) — Houses 31-40 ---
+	{"name": "House 31", "gx": 4, "gy": 50, "w": 6, "h": 5},
+	{"name": "House 32", "gx": 14, "gy": 50, "w": 6, "h": 5},
+	{"name": "House 33", "gx": 24, "gy": 50, "w": 6, "h": 5},
+	{"name": "House 34", "gx": 34, "gy": 50, "w": 6, "h": 5},
+	{"name": "House 35", "gx": 44, "gy": 50, "w": 6, "h": 5},
+	{"name": "House 36", "gx": 54, "gy": 50, "w": 6, "h": 5},
+	{"name": "House 37", "gx": 64, "gy": 50, "w": 6, "h": 5},
+	{"name": "House 38", "gx": 74, "gy": 50, "w": 6, "h": 5},
+	{"name": "House 39", "gx": 84, "gy": 50, "w": 6, "h": 5},
+	{"name": "House 40", "gx": 94, "gy": 50, "w": 6, "h": 5},
+	# --- Housing row 5 (y=58) — Houses 41-46 ---
+	{"name": "House 41", "gx": 4, "gy": 58, "w": 6, "h": 5},
+	{"name": "House 42", "gx": 14, "gy": 58, "w": 6, "h": 5},
+	{"name": "House 43", "gx": 24, "gy": 58, "w": 6, "h": 5},
+	{"name": "House 44", "gx": 34, "gy": 58, "w": 6, "h": 5},
+	{"name": "House 45", "gx": 44, "gy": 58, "w": 6, "h": 5},
+	{"name": "House 46", "gx": 54, "gy": 58, "w": 6, "h": 5},
 ]
 
 # Logical map: stores Tile enum values (GRASS1 for all grass initially)
@@ -216,46 +270,37 @@ func _init_map() -> void:
 
 func _carve_paths() -> void:
 	# === MAIN ROADS (cobblestone) ===
-	# East-west highway
-	for x: int in range(2, MAP_WIDTH - 2):
-		_set_tile(x, 12, Tile.COBBLESTONE)
+	# East-west highway through commercial area
+	for x: int in range(2, 105):
 		_set_tile(x, 13, Tile.COBBLESTONE)
+		_set_tile(x, 14, Tile.COBBLESTONE)
 	# North-south highway
 	for y: int in range(2, MAP_HEIGHT - 2):
-		_set_tile(29, y, Tile.COBBLESTONE)
-		_set_tile(30, y, Tile.COBBLESTONE)
+		_set_tile(59, y, Tile.COBBLESTONE)
+		_set_tile(60, y, Tile.COBBLESTONE)
 
-	# === HOUSING STREETS (dirt) ===
-	for x: int in range(2, MAP_WIDTH - 2):
-		_set_tile(x, 23, Tile.DIRT_PATH)
+	# === HOUSING STREETS (dirt, east-west between house rows) ===
+	for x: int in range(2, 102):
 		_set_tile(x, 24, Tile.DIRT_PATH)
-	for x: int in range(2, MAP_WIDTH - 2):
-		_set_tile(x, 31, Tile.DIRT_PATH)
+		_set_tile(x, 25, Tile.DIRT_PATH)
 		_set_tile(x, 32, Tile.DIRT_PATH)
+		_set_tile(x, 33, Tile.DIRT_PATH)
+		_set_tile(x, 40, Tile.DIRT_PATH)
+		_set_tile(x, 41, Tile.DIRT_PATH)
+		_set_tile(x, 48, Tile.DIRT_PATH)
+		_set_tile(x, 49, Tile.DIRT_PATH)
+		_set_tile(x, 56, Tile.DIRT_PATH)
+		_set_tile(x, 57, Tile.DIRT_PATH)
 
-	# === CONNECTORS (dirt) ===
-	# To commercial buildings
-	for y: int in range(10, 14):
-		_set_tile(11, y, Tile.DIRT_PATH)
-		_set_tile(20, y, Tile.DIRT_PATH)
-		_set_tile(41, y, Tile.DIRT_PATH)
-	# To service buildings
-	for y: int in range(13, 20):
-		_set_tile(11, y, Tile.DIRT_PATH)
-		_set_tile(20, y, Tile.DIRT_PATH)
-		_set_tile(41, y, Tile.DIRT_PATH)
-	# To housing row 1
-	for y: int in range(24, 27):
-		for hx: int in [7, 15, 23, 31, 39, 47]:
-			_set_tile(hx, y, Tile.DIRT_PATH)
-	# Between housing rows
-	for y: int in range(24, 33):
-		for hx: int in [7, 15, 23, 31, 39]:
-			_set_tile(hx, y, Tile.DIRT_PATH)
-	# To housing row 2
-	for y: int in range(32, 35):
-		for hx: int in [7, 15, 23, 31, 39]:
-			_set_tile(hx, y, Tile.DIRT_PATH)
+	# === CONNECTORS (dirt, north-south to buildings) ===
+	# Vertical connectors from main road to commercial/service buildings
+	for connect_x: int in [7, 17, 27, 38, 50, 62, 72, 82, 92]:
+		for y: int in range(10, 25):
+			_set_tile(connect_x, y, Tile.DIRT_PATH)
+	# Vertical connectors between housing rows
+	for connect_x: int in [7, 17, 27, 37, 47, 57, 67, 77, 87, 97]:
+		for y: int in range(25, 63):
+			_set_tile(connect_x, y, Tile.DIRT_PATH)
 
 
 func _place_buildings() -> void:
@@ -289,7 +334,7 @@ func _decorate_buildings() -> void:
 	## Adds windows to walls and awnings above shop doors.
 
 	var awning_buildings: Array[String] = [
-		"General Store", "Bakery", "Tavern"
+		"General Store", "Bakery", "Tavern", "Inn", "Market", "Tailor Shop"
 	]
 
 	for bld: Dictionary in _buildings:
@@ -377,6 +422,46 @@ func _place_furniture() -> void:
 			[0, 0, Tile.DESK], [2, 0, Tile.DESK], [3, 0, Tile.DESK],
 			[1, 2, Tile.PEW], [2, 2, Tile.PEW], [4, 2, Tile.PEW],
 		],
+		"Library": [
+			# 5×3 interior — shelves + desks
+			[0, 0, Tile.SHELF], [1, 0, Tile.SHELF], [2, 0, Tile.SHELF], [3, 0, Tile.SHELF],
+			[0, 2, Tile.DESK], [1, 2, Tile.DESK],
+		],
+		"Inn": [
+			# 6×4 interior — counter + barrel + beds
+			[1, 0, Tile.COUNTER], [2, 0, Tile.COUNTER],
+			[4, 0, Tile.BARREL],
+			[0, 2, Tile.BED], [2, 2, Tile.BED], [4, 2, Tile.BED],
+		],
+		"Market": [
+			# 6×3 interior — counters + barrels
+			[0, 0, Tile.COUNTER], [1, 0, Tile.COUNTER], [2, 0, Tile.COUNTER], [3, 0, Tile.COUNTER],
+			[0, 2, Tile.BARREL], [4, 2, Tile.BARREL],
+		],
+		"Carpenter Workshop": [
+			# 5×3 interior — tables + shelf + barrel
+			[0, 0, Tile.TABLE], [1, 0, Tile.TABLE], [3, 0, Tile.SHELF],
+			[0, 2, Tile.BARREL],
+		],
+		"Tailor Shop": [
+			# 4×3 interior — tables + shelf
+			[0, 0, Tile.TABLE], [1, 0, Tile.TABLE], [3, 0, Tile.SHELF],
+		],
+		"Stables": [
+			# 5×3 interior — barrels (hay) + table
+			[0, 0, Tile.BARREL], [1, 0, Tile.BARREL], [3, 0, Tile.BARREL],
+			[0, 2, Tile.TABLE],
+		],
+		"Clinic": [
+			# 4×3 interior — desks + shelf + bed
+			[0, 0, Tile.DESK], [1, 0, Tile.DESK], [3, 0, Tile.SHELF],
+			[0, 2, Tile.BED],
+		],
+		"School": [
+			# 5×3 interior — desks + shelf
+			[0, 0, Tile.DESK], [1, 0, Tile.DESK],
+			[0, 2, Tile.DESK], [1, 2, Tile.DESK], [3, 0, Tile.SHELF],
+		],
 	}
 
 	# Houses: 4×3 interior = 12 tiles → 3 furniture, 9 walkable
@@ -460,11 +545,12 @@ func get_furniture_adjacent_tile(grid_pos: Vector2i) -> Vector2:
 
 
 func _place_water() -> void:
-	for y: int in range(36, 42):
-		for x: int in range(46, 55):
-			var dx: float = x - 50.5
-			var dy: float = y - 39.0
-			if dx * dx + dy * dy < 16.0:
+	# Pond in the bottom-right area of the expanded map
+	for y: int in range(60, 67):
+		for x: int in range(104, 114):
+			var dx: float = x - 109.0
+			var dy: float = y - 63.5
+			if dx * dx + dy * dy < 18.0:
 				_set_tile(x, y, Tile.WATER)
 
 
@@ -715,4 +801,4 @@ func get_unreserved_interior_tile(building_name: String, npc_name: String) -> Ve
 
 
 func get_player_spawn_position() -> Vector2:
-	return Vector2(29 * TILE_SIZE + TILE_SIZE / 2.0, 13 * TILE_SIZE + TILE_SIZE / 2.0)
+	return Vector2(59 * TILE_SIZE + TILE_SIZE / 2.0, 14 * TILE_SIZE + TILE_SIZE / 2.0)

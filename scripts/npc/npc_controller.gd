@@ -30,8 +30,8 @@ var memory: MemorySystem = MemorySystem.new()
 # Embedding queue — batch-processes pending embeddings every 5 real seconds
 var _embedding_queue: Array[Dictionary] = []
 var _embedding_timer: float = 0.0
-const EMBEDDING_BATCH_INTERVAL: float = 5.0
-const EMBEDDING_BATCH_SIZE: int = 10
+const EMBEDDING_BATCH_INTERVAL: float = 3.0
+const EMBEDDING_BATCH_SIZE: int = 20
 
 # A* waypoint following
 var _path: PackedVector2Array = PackedVector2Array()
@@ -39,6 +39,9 @@ var _path_index: int = 0
 var _is_moving: bool = false
 var _astar: AStarGrid2D = null
 var _town_map: Node2D = null
+
+# Staggered planning — spreads API calls across 60 game minutes
+var _plan_stagger_time: int = 0
 
 # Conversation lock — prevents movement and schedule changes while talking
 var _in_conversation: bool = false
@@ -335,9 +338,10 @@ func _on_hour_changed(hour: int) -> void:
 	if OS.is_debug_build():
 		print("[Activity] %s: %s (at %s)" % [npc_name, current_activity, _current_destination])
 
-	# Daily planning — generate plan at dawn
+	# Daily planning — stagger across hours 5-6 to avoid 61 simultaneous API calls
 	if hour == 5 and planner._last_plan_day != _get_current_day():
-		planner.generate_daily_plan()
+		var stagger: int = abs(npc_name.hash()) % 60
+		_plan_stagger_time = GameClock.total_minutes + stagger
 
 
 func _on_time_tick(_game_minute: int) -> void:
@@ -350,13 +354,19 @@ func _on_time_tick(_game_minute: int) -> void:
 	if _current_destination == home_building and (GameClock.hour >= 22 or GameClock.hour < 6):
 		energy = minf(energy + 0.5, 100.0)
 
-	# Social restoration: other NPCs within 3 tiles (96px)
-	for npc: Node in get_tree().get_nodes_in_group("npcs"):
-		if npc == self:
-			continue
-		if global_position.distance_to(npc.global_position) <= 96.0:
-			social = minf(social + 0.3, 100.0)
-			break  # Only need one nearby NPC to get the bonus
+	# Social restoration: other NPCs within 3 tiles (96px) — check every 5 min to reduce O(N²)
+	if GameClock.total_minutes % 5 == 0:
+		for other_npc: Node in get_tree().get_nodes_in_group("npcs"):
+			if other_npc == self:
+				continue
+			if global_position.distance_to(other_npc.global_position) <= 96.0:
+				social = minf(social + 1.5, 100.0)  # 5x boost since check is 5x less frequent
+				break
+
+	# Staggered daily planning trigger
+	if _plan_stagger_time > 0 and GameClock.total_minutes >= _plan_stagger_time:
+		_plan_stagger_time = 0
+		planner.generate_daily_plan()
 
 	# Just-in-time L2/L3 decomposition every 5 min
 	if GameClock.total_minutes % 5 == 0:

@@ -12,6 +12,14 @@ const WORLD_TREE: Dictionary = {
 	"Sheriff Office": {"Office": ["desk", "desk", "shelf"]},
 	"Courthouse": {"Clerk Area": ["desk", "desk", "desk"], "Gallery": ["pew", "pew", "pew"]},
 	"Blacksmith": {"Forge": ["anvil", "barrel", "shelf"]},
+	"Library": {"Reading Room": ["shelf", "shelf", "shelf", "shelf"], "Study Area": ["desk", "desk"]},
+	"Inn": {"Lobby": ["counter", "counter", "barrel"], "Guest Rooms": ["bed", "bed", "bed"]},
+	"Market": {"Stalls": ["counter", "counter", "counter", "counter"], "Storage": ["barrel", "barrel"]},
+	"Carpenter Workshop": {"Workshop": ["table", "table", "barrel"], "Storage": ["shelf"]},
+	"Tailor Shop": {"Workroom": ["table", "table"], "Display": ["shelf"]},
+	"Stables": {"Stalls": ["barrel", "barrel", "barrel"], "Tack Room": ["table"]},
+	"Clinic": {"Examination": ["desk", "desk"], "Recovery": ["bed"], "Pharmacy": ["shelf"]},
+	"School": {"Classroom": ["desk", "desk", "desk", "desk"], "Library Corner": ["shelf"]},
 }
 const HOUSE_TREE: Dictionary = {"Bedroom": ["bed"], "Living Area": ["shelf", "table"]}
 
